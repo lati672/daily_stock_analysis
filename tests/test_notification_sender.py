@@ -208,6 +208,24 @@ class TestDiscordSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
     @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_exception_log_redacts_webhook_url(self, mock_post, _mock_sleep):
+        webhook_url = "https://discord.com/api/webhooks/123/secret-token"
+        mock_post.side_effect = requests.exceptions.ConnectionError(
+            f"failed to connect to {webhook_url}"
+        )
+        sender = DiscordSender(_config(discord_webhook_url=webhook_url))
+
+        with self.assertLogs("src.notification_sender.discord_sender", level="WARNING") as logs:
+            result = sender.send_to_discord("content")
+
+        self.assertFalse(result)
+        output = "\n".join(logs.output)
+        self.assertNotIn(webhook_url, output)
+        self.assertNotIn("secret-token", output)
+        self.assertIn("[REDACTED_URL]", output)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
     def test_send_bot_clamps_configured_limit_to_discord_content_limit(self, mock_post, _mock_sleep):
         mock_post.return_value = _response(200)
         cfg = _config(

@@ -74,6 +74,15 @@ def _build_agent_chat_context(request: ChatRequest, config, skills: Optional[Lis
     return context
 
 
+async def _resolve_moomoo_chat_context(context: Dict[str, Any]) -> Dict[str, Any]:
+    """Load live OpenD holdings only when the user explicitly opts in."""
+    if context.get("include_moomoo_portfolio") is not True:
+        return context
+    from src.services.moomoo_ai_context import enrich_moomoo_chat_context
+
+    return await asyncio.to_thread(enrich_moomoo_chat_context, context)
+
+
 class ChatResponse(BaseModel):
     success: bool
     content: str
@@ -216,7 +225,7 @@ async def agent_chat(request: ChatRequest):
         skills = request.effective_skills
         executor = _build_executor(config, skills or None)
 
-        ctx = _build_agent_chat_context(request, config, skills)
+        ctx = await _resolve_moomoo_chat_context(_build_agent_chat_context(request, config, skills))
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
@@ -316,6 +325,27 @@ async def send_chat_to_notification(request: SendChatRequest):
             "success": False,
             "error": "no_channels",
             "message": "未配置通知渠道，请先在设置中配置",
+        }
+    return {"success": True}
+
+
+@router.post("/chat/send/discord")
+async def send_chat_to_discord(request: SendChatRequest):
+    """Send one Chat payload only to the configured Discord destination."""
+    from src.notification import NotificationService
+
+    title = (request.title or "").strip()
+    content = f"## {title}\n\n{request.content}" if title else request.content
+    loop = asyncio.get_running_loop()
+    success = await loop.run_in_executor(
+        None,
+        lambda: NotificationService().send_to_discord(content),
+    )
+    if not success:
+        return {
+            "success": False,
+            "error": "discord_unavailable",
+            "message": "Discord 未配置或发送失败，请检查通知设置",
         }
     return {"success": True}
 
@@ -481,7 +511,7 @@ async def agent_chat_stream(request: ChatRequest):
             _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
 
     skills = request.effective_skills
-    stream_ctx = _build_agent_chat_context(request, config, skills)
+    stream_ctx = await _resolve_moomoo_chat_context(_build_agent_chat_context(request, config, skills))
 
     def progress_callback(event: dict):
         if backend_id == "codex_app_server" and cancel_event.is_set():

@@ -25,6 +25,7 @@ const {
   mockGetStatus,
   mockDeleteChatSession,
   mockSendChat,
+  mockSendDiscord,
   mockGetSystemConfig,
   mockUpdateSystemConfig,
   mockGetWatchlist,
@@ -38,6 +39,7 @@ const {
   mockGetStatus: vi.fn(),
   mockDeleteChatSession: vi.fn(),
   mockSendChat: vi.fn(),
+  mockSendDiscord: vi.fn(),
   mockGetSystemConfig: vi.fn(),
   mockUpdateSystemConfig: vi.fn(),
   mockGetWatchlist: vi.fn(),
@@ -94,6 +96,7 @@ vi.mock('../../api/agent', () => ({
     getStatus: mockGetStatus,
     deleteChatSession: mockDeleteChatSession,
     sendChat: mockSendChat,
+    sendDiscord: mockSendDiscord,
   },
 }));
 
@@ -174,6 +177,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  window.localStorage.removeItem('dsa_chat_auto_send_discord');
   mockGetStatus.mockReset();
   mockStoreState.messages = [];
   mockStoreState.loading = false;
@@ -216,6 +220,7 @@ beforeEach(() => {
   });
   mockDeleteChatSession.mockResolvedValue(undefined);
   mockSendChat.mockResolvedValue({ success: true });
+  mockSendDiscord.mockResolvedValue({ success: true });
   mockGetWatchlist.mockResolvedValue([]);
   mockGetSystemConfig.mockResolvedValue({
     configVersion: 'cfg-v1',
@@ -1134,7 +1139,7 @@ describe('ChatPage', () => {
     });
   });
 
-  it('keeps assistant message actions directly activatable in the DOM', async () => {
+  it('renders assistant message actions below the reply body', async () => {
     mockStoreState.messages = [
       { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
     ];
@@ -1150,6 +1155,82 @@ describe('ChatPage', () => {
 
     expect(actionGroup).toHaveClass('chat-message-actions');
     expect(actionGroup?.className).not.toMatch(/pointer-events-none|opacity-0/);
+    expect(actionGroup?.previousElementSibling).toHaveClass('chat-prose');
+  });
+
+  it('keeps a fixed top inset between the message viewport and panel border', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const viewport = await screen.findByTestId('chat-message-scroll');
+    expect(viewport.parentElement).toHaveClass('pt-2', 'md:pt-3');
+  });
+
+  it('sends one assistant reply only to Discord', async () => {
+    mockStoreState.messages = [
+      { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '发送此条回复到 Discord' }));
+
+    await waitFor(() => {
+      expect(mockSendDiscord).toHaveBeenCalledWith(
+        '# AI 回复 · 趋势分析\n\n趋势偏强',
+        'AI 问股回复',
+      );
+    });
+    expect(await screen.findByText('此条回复已发送到 Discord')).toBeInTheDocument();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it('auto-sends only the newly generated assistant reply when enabled', async () => {
+    mockStartStream.mockImplementationOnce(async (_payload, meta) => {
+      meta?.onAccepted?.({
+        type: 'accepted',
+        backend: 'litellm',
+        request_id: 'request-auto-discord',
+        session_id: 'session-1',
+      });
+      return {
+        id: 'assistant-new',
+        role: 'assistant',
+        content: '新生成的分析',
+        skillName: '趋势分析',
+      };
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const autoSendToggle = await screen.findByRole('checkbox', { name: /自动发送新回复到 Discord/ });
+    fireEvent.click(autoSendToggle);
+    expect(window.localStorage.getItem('dsa_chat_auto_send_discord')).toBe('true');
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockSendDiscord).toHaveBeenCalledWith(
+        '# AI 回复 · 趋势分析\n\n新生成的分析',
+        'AI 问股回复',
+      );
+    });
+    expect(await screen.findByText('新回复已自动发送到 Discord')).toBeInTheDocument();
+    expect(mockSendChat).not.toHaveBeenCalled();
   });
 
   it('sends exported markdown to notification channel and shows success feedback', async () => {
@@ -2235,5 +2316,53 @@ describe('watchlist button with code variants', () => {
       expect(mockRemoveFromWatchlist).toHaveBeenCalledWith('00700');
     });
     expect(mockAddToWatchlist).not.toHaveBeenCalled();
+  });
+
+  it('opts into a single Moomoo position from the account-page analysis link', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat?stock=AAPL&name=Apple&moomoo=position&new=1']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStartNewChat).toHaveBeenCalledTimes(1);
+    const checkbox = await screen.findByRole('checkbox', { name: /结合我的 Moomoo 持仓/ });
+    expect(checkbox).toBeChecked();
+    expect(await screen.findByDisplayValue(/结合我的持仓成本、仓位和当前盈亏/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /发送|处理中/ }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          stock_code: 'AAPL',
+          include_moomoo_portfolio: true,
+          moomoo_context_mode: 'position',
+        }),
+      }),
+      expect.any(Object),
+    ));
+  });
+
+  it('prefills deterministic today attribution with portfolio context', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat?moomoo=portfolio&task=today-attribution&new=1']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStartNewChat).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('checkbox', { name: /结合我的 Moomoo 持仓/ })).toBeChecked();
+    expect(await screen.findByDisplayValue(/解释今日盈亏归因/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /发送|处理中/ }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: {
+          include_moomoo_portfolio: true,
+          moomoo_context_mode: 'today_attribution',
+        },
+      }),
+      expect.any(Object),
+    ));
   });
 });

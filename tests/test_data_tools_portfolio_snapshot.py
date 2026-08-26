@@ -12,7 +12,10 @@ from src.agent.tools.data_tools import _handle_get_portfolio_snapshot
 
 
 class _FakePortfolioService:
+    last_kwargs = None
+
     def get_portfolio_snapshot(self, **_kwargs):
+        type(self).last_kwargs = _kwargs
         return {
             "as_of": "2026-03-15",
             "cost_method": "fifo",
@@ -97,12 +100,14 @@ class _FakeRiskService:
 class TestGetPortfolioSnapshotTool(unittest.TestCase):
     @patch("src.services.portfolio_service.PortfolioService", _FakePortfolioService)
     @patch("src.services.portfolio_risk_service.PortfolioRiskService", _FakeRiskService)
-    def test_default_returns_compact_snapshot_and_risk(self) -> None:
+    def test_default_returns_compact_stored_snapshot_without_risk(self) -> None:
+        _FakePortfolioService.last_kwargs = None
         result = _handle_get_portfolio_snapshot(account_id=1)
         self.assertEqual(result["status"], "ok")
         self.assertIn("snapshot", result)
-        self.assertIn("risk", result)
-        self.assertEqual(result["risk"]["status"], "ok")
+        self.assertNotIn("risk", result)
+        self.assertIsNotNone(_FakePortfolioService.last_kwargs)
+        self.assertFalse(_FakePortfolioService.last_kwargs["include_realtime"])
 
         account = result["snapshot"]["accounts"][0]
         self.assertIn("top_positions", account)
@@ -112,17 +117,20 @@ class TestGetPortfolioSnapshotTool(unittest.TestCase):
 
     @patch("src.services.portfolio_service.PortfolioService", _FakePortfolioService)
     @patch("src.services.portfolio_risk_service.PortfolioRiskService", _FakeRiskService)
-    def test_include_positions_and_disable_risk(self) -> None:
+    def test_opt_in_realtime_positions_and_risk(self) -> None:
+        _FakePortfolioService.last_kwargs = None
         result = _handle_get_portfolio_snapshot(
             account_id=1,
             include_positions=True,
-            include_risk=False,
+            include_risk=True,
+            include_realtime=True,
             as_of="2026-03-15",
         )
         self.assertEqual(result["status"], "ok")
         account = result["snapshot"]["accounts"][0]
         self.assertIn("positions", account)
-        self.assertNotIn("risk", result)
+        self.assertEqual(result["risk"]["status"], "ok")
+        self.assertTrue(_FakePortfolioService.last_kwargs["include_realtime"])
 
         invalid = _handle_get_portfolio_snapshot(as_of="2026/03/15")
         self.assertIn("error", invalid)

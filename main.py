@@ -64,7 +64,9 @@ if _packaged_import_probe:
 
 import argparse
 import logging
+import signal
 import sys
+import threading
 import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
@@ -81,6 +83,67 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
+
+
+class _ApiServerHandle:
+    """Own the background Uvicorn server so CLI shutdown can release its port."""
+
+    def __init__(self, server: Any, thread: Any) -> None:
+        self.server = server
+        self.thread = thread
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        if not self.thread.is_alive():
+            return
+        self.server.should_exit = True
+        self.thread.join(timeout=timeout_seconds)
+        if self.thread.is_alive():
+            logger.warning(
+                "FastAPI 服务未在 %.1f 秒内完成优雅退出，继续等待强制退出",
+                timeout_seconds,
+            )
+            self.server.force_exit = True
+            self.thread.join(timeout=1.0)
+
+
+def _stop_api_server(server_handle: Optional[_ApiServerHandle]) -> None:
+    if server_handle is None:
+        return
+    server_handle.stop()
+
+
+def _wait_for_api_server_shutdown(
+    server_handle: Optional[_ApiServerHandle],
+) -> None:
+    """Wait for SIGINT/SIGTERM and always release the background API listener."""
+
+    shutdown_requested = False
+    received_signal: Optional[int] = None
+    previous_handlers: Dict[int, Any] = {}
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        nonlocal shutdown_requested, received_signal
+        received_signal = signum
+        shutdown_requested = True
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_shutdown)
+    except (OSError, ValueError):
+        previous_handlers.clear()
+
+    try:
+        while not shutdown_requested:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        received_signal = signal.SIGINT
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        if received_signal is not None:
+            logger.info("\n收到退出信号 %s，正在停止 Web 服务", received_signal)
+        _stop_api_server(server_handle)
 
 
 def _get_active_env_path() -> Path:
@@ -1103,7 +1166,7 @@ def _run_analysis_with_runtime_scheduler_lock(
     )
 
 
-def start_api_server(host: str, port: int, config: Config) -> None:
+def start_api_server(host: str, port: int, config: Config) -> _ApiServerHandle:
     """
     在后台线程启动 FastAPI 服务
 
@@ -1118,6 +1181,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Match Uvicorn's listener semantics so a recently closed connection in
+        # TIME_WAIT is not mistaken for another process still owning the port.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
     except OSError as exc:
         raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
@@ -1182,7 +1248,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
             )
         if uvicorn_server.started:
             logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
-            return
+            return _ApiServerHandle(uvicorn_server, thread)
         if not thread.is_alive():
             break
         time.sleep(0.05)
@@ -1191,7 +1257,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
         raise RuntimeError(f"FastAPI server failed to start: {host}:{port}; {startup_error[0]}")
     if uvicorn_server.started:
         logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
-        return
+        return _ApiServerHandle(uvicorn_server, thread)
     if not thread.is_alive():
         raise RuntimeError(f"FastAPI 服务器启动后立即退出: {host}:{port}")
 
@@ -1395,6 +1461,7 @@ def main() -> int:
         _warn_if_public_webui_without_auth(args.host)
 
     bot_clients_started = False
+    api_server_handle: Optional[_ApiServerHandle] = None
     if start_serve:
         from src.services.runtime_scheduler import (
             CLI_SCHEDULER_OWNER_ENV,
@@ -1443,7 +1510,11 @@ def main() -> int:
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
-            start_api_server(host=args.host, port=args.port, config=config)
+            api_server_handle = start_api_server(
+                host=args.host,
+                port=args.port,
+                config=config,
+            )
             bot_clients_started = True
         except Exception as e:
             logger.error(f"启动 FastAPI 服务失败: {e}")
@@ -1461,11 +1532,7 @@ def main() -> int:
         logger.info("通过 /api/v1/analysis/analyze 接口触发分析")
         logger.info(f"API 文档: http://{args.host}:{args.port}/docs")
         logger.info("按 Ctrl+C 退出...")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("\n用户中断，程序退出")
+        _wait_for_api_server_shutdown(api_server_handle)
         return 0
 
     try:
@@ -1609,11 +1676,7 @@ def main() -> int:
         keep_running = start_serve and not (args.schedule or config.schedule_enabled)
         if keep_running:
             logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
+            _wait_for_api_server_shutdown(api_server_handle)
 
         return 0
 

@@ -22,6 +22,7 @@ class _TradeContext:
     ) -> None:
         self.closed = False
         self.position_queries = []
+        self.accinfo_queries = []
         self.accounts = accounts
         self.positions_by_account = positions_by_account
         self.open_arguments = {
@@ -70,14 +71,26 @@ class _TradeContext:
             {"code": "SZ.000001", "qty": 8, "position_side": "LONG"},
         ])
 
+    def accinfo_query(self, **kwargs):
+        self.accinfo_queries.append(kwargs)
+        return 0, pd.DataFrame([{
+            "market_val": 1900.0,
+            "total_assets": 2100.0,
+            "realized_pl": 25.0,
+            "unrealized_pl": 95.0,
+            "currency": "USD",
+        }])
+
     def close(self) -> None:
         self.closed = True
 
 
 class _QuoteContext:
-    def __init__(self, *, host, port, stock_types=None) -> None:
+    def __init__(self, *, host, port, stock_types=None, market_snapshots=None) -> None:
         self.closed = False
         self.open_arguments = {"host": host, "port": port}
+        self.market_snapshot_queries = []
+        self.market_snapshots = market_snapshots or {}
         self.stock_types = {
             "US.AAPL": "STOCK",
             "US.DRAM": "ETF",
@@ -95,6 +108,14 @@ class _QuoteContext:
             if code in self.stock_types
         ])
 
+    def get_market_snapshot(self, code_list):
+        self.market_snapshot_queries.append(code_list)
+        return 0, pd.DataFrame([
+            {"code": code, **self.market_snapshots[code]}
+            for code in code_list
+            if code in self.market_snapshots
+        ])
+
     def close(self) -> None:
         self.closed = True
 
@@ -106,6 +127,7 @@ def _fake_api(
     accounts=None,
     positions_by_account=None,
     stock_types=None,
+    market_snapshots=None,
 ):
     def open_trade_context(*, filter_trdmarket, host, port, security_firm):
         context = _TradeContext(
@@ -120,7 +142,12 @@ def _fake_api(
         return context
 
     def open_quote_context(*, host, port):
-        context = _QuoteContext(host=host, port=port, stock_types=stock_types)
+        context = _QuoteContext(
+            host=host,
+            port=port,
+            stock_types=stock_types,
+            market_snapshots=market_snapshots,
+        )
         quote_contexts.append(context)
         return context
 
@@ -175,6 +202,119 @@ def _load_codes_for_accounts(accounts, positions_by_account):
 
 
 class FutuPortfolioServiceTest(unittest.TestCase):
+    def test_load_futu_broker_snapshot_returns_live_position_fields(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [{
+                    "code": "US.AAPL",
+                    "stock_name": "Apple",
+                    "qty": 10,
+                    "can_sell_qty": 8,
+                    "position_side": "LONG",
+                    "cost_price": 175.0,
+                    "average_cost": 180.5,
+                    "diluted_cost": 175.0,
+                    "nominal_price": 190.0,
+                    "market_val": 1900.0,
+                    "pl_val": 95.0,
+                    "pl_ratio": 5.26,
+                    "pl_ratio_avg_cost": 5.25,
+                    "unrealized_pl": 95.0,
+                    "realized_pl": 25.0,
+                    "today_pl_val": 38.0,
+                    "currency": "USD",
+                }],
+            },
+            market_snapshots={
+                "US.AAPL": {"last_price": 190.0, "prev_close_price": 185.0},
+            },
+        )
+
+        account_info = pd.DataFrame([{
+            "market_val": 1900.0,
+            "total_assets": 2100.0,
+            "realized_pl": "N/A",
+            "unrealized_pl": "N/A",
+            "currency": "USD",
+        }])
+        with patch.dict("os.environ", {}, clear=True), patch.object(
+            service, "_load_futu_api", return_value=api
+        ), patch.object(
+            _TradeContext, "accinfo_query", return_value=(0, account_info)
+        ):
+            snapshot = service.load_futu_broker_snapshot()
+
+        self.assertEqual(snapshot.host, "127.0.0.1")
+        self.assertEqual(snapshot.accounts[0].account_id, 1001)
+        self.assertEqual(snapshot.accounts[0].role, "NORMAL")
+        self.assertEqual(snapshot.accounts[0].position_count, 1)
+        self.assertEqual(snapshot.positions[0].code, "US.AAPL")
+        self.assertEqual(snapshot.positions[0].available_quantity, 8.0)
+        self.assertEqual(snapshot.positions[0].cost_price, 180.5)
+        self.assertEqual(snapshot.positions[0].holding_pnl, 95.0)
+        self.assertEqual(snapshot.positions[0].holding_pnl_pct, 5.25)
+        self.assertAlmostEqual(snapshot.positions[0].today_change_pct, 2.7027027)
+        self.assertAlmostEqual(snapshot.positions[0].unrealized_pnl_pct, 5.2631579)
+        self.assertEqual(snapshot.total_market_value, 1900.0)
+        self.assertEqual(snapshot.holding_pnl, 95.0)
+        self.assertAlmostEqual(snapshot.holding_pnl_pct, 5.2631579)
+        self.assertEqual(snapshot.total_pnl, 120.0)
+        self.assertEqual(snapshot.today_pnl, 38.0)
+        self.assertTrue(all(ctx.closed for ctx in trade_contexts))
+        self.assertEqual(quote_contexts[0].market_snapshot_queries, [["US.AAPL"]])
+        self.assertTrue(all(ctx.closed for ctx in quote_contexts))
+
+    def test_mixed_usd_hkd_pnl_is_converted_to_account_usd(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {
+                        "code": "US.AAPL", "stock_name": "Apple", "qty": 10,
+                        "position_side": "LONG", "market_val": 1000.0,
+                        "pl_val": 100.0, "unrealized_pl": 80.0,
+                        "realized_pl": 20.0, "today_pl_val": 10.0,
+                        "currency": "USD",
+                    },
+                    {
+                        "code": "HK.00700", "stock_name": "Tencent", "qty": 20,
+                        "position_side": "LONG", "market_val": 10000.0,
+                        "pl_val": 1000.0, "unrealized_pl": 800.0,
+                        "realized_pl": 200.0, "today_pl_val": 100.0,
+                        "currency": "HKD",
+                    },
+                ],
+            },
+        )
+        account_info = pd.DataFrame([{
+            "market_val": 2280.0,
+            "total_assets": 2500.0,
+            "realized_pl": "N/A",
+            "unrealized_pl": "N/A",
+            "currency": "USD",
+        }])
+
+        with patch.dict("os.environ", {}, clear=True), patch.object(
+            service, "_load_futu_api", return_value=api
+        ), patch.object(
+            _TradeContext, "accinfo_query", return_value=(0, account_info)
+        ):
+            snapshot = service.load_futu_broker_snapshot()
+
+        self.assertAlmostEqual(snapshot.holding_pnl, 228.0)
+        self.assertAlmostEqual(snapshot.today_pnl, 22.8)
+        self.assertAlmostEqual(snapshot.total_pnl, 228.0)
+        self.assertEqual(snapshot.currency, "USD")
+
     def test_missing_sdk_uses_actionable_install_error(self):
         with patch(
             "builtins.__import__",

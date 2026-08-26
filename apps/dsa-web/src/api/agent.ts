@@ -104,6 +104,18 @@ export const agentApi = {
     }
     return { success: true };
   },
+  async sendDiscord(content: string, title?: string): Promise<{ success: boolean }> {
+    const response = await apiClient.post<{
+      success: boolean;
+      error?: string;
+      message?: string;
+    }>('/api/v1/agent/chat/send/discord', { content, title });
+    const data = response.data;
+    if (data.success === false) {
+      throw new Error(data.message || 'Discord 发送失败');
+    }
+    return { success: true };
+  },
   async chatStream(
     payload: ChatStreamRequest,
     options?: ChatStreamOptions,

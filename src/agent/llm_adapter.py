@@ -102,6 +102,12 @@ _OPT_IN_THINKING_MODELS: Dict[str, dict] = {
     "deepseek-chat": {"thinking": {"type": "enabled"}},
 }
 
+# OpenAI currently rejects Chat Completions requests that combine function
+# tools with reasoning_effort for this model.  The Agent still uses LiteLLM's
+# Chat Completions-compatible surface, so explicitly disable reasoning for
+# tool rounds while leaving text-only calls unchanged.
+_CHAT_COMPLETIONS_TOOL_REASONING_NONE_MODELS: List[str] = ["gpt-5.6-terra"]
+
 # Custom model pricing for models not in LiteLLM's built-in price list.
 # Official MiniMax pricing: https://platform.minimax.io/docs/guides/pricing-paygo
 # - MiniMax-M3: $0.6/M input tokens, $2.4/M output tokens for prompts <=512K input
@@ -294,6 +300,16 @@ def get_thinking_extra_body(model: str) -> Optional[dict]:
     if _model_matches(model, _AUTO_THINKING_MODELS):
         return None
     return _get_opt_in_payload(model, _OPT_IN_THINKING_MODELS)
+
+
+def _requires_tool_reasoning_none(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Whether a Chat Completions tool request must disable reasoning."""
+    wire_model = resolve_litellm_wire_model(model, model_list)
+    model_short = wire_model.rsplit("/", 1)[-1]
+    return _model_matches(model_short, _CHAT_COMPLETIONS_TOOL_REASONING_NONE_MODELS)
 
 
 def resolve_fallback_litellm_wire_models(
@@ -730,6 +746,8 @@ class LLMToolAdapter:
             self._get_temperature() if temperature is None else temperature,
             model_list=recovery_model_list,
         )
+        if tools and _requires_tool_reasoning_none(model, recovery_model_list):
+            call_kwargs["reasoning_effort"] = "none"
         diagnostics_level = normalize_prompt_cache_diagnostics_level(
             getattr(self._config, "llm_prompt_cache_diagnostics_level", "off")
         )

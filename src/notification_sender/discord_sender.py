@@ -13,6 +13,7 @@ import requests
 
 from src.config import Config
 from src.formatters import MIN_MAX_WORDS, chunk_content_by_max_words
+from src.utils.sanitize import sanitize_diagnostic_text
 
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,7 @@ class DiscordSender:
             try:
                 response = requests.post(url, **request_kwargs)
             except requests.exceptions.RequestException as e:
+                safe_error = sanitize_diagnostic_text(e)
                 if attempt < DISCORD_MAX_RETRIES:
                     delay = 2 ** attempt
                     logger.warning(
@@ -224,12 +226,12 @@ class DiscordSender:
                         channel_name,
                         attempt,
                         DISCORD_MAX_RETRIES,
-                        e,
+                        safe_error,
                         delay,
                     )
                     time.sleep(delay)
                     continue
-                logger.error("Discord %s 请求重试后仍失败: %s", channel_name, e)
+                logger.error("Discord %s 请求重试后仍失败: %s", channel_name, safe_error)
                 return False
 
             if response.status_code in success_statuses:

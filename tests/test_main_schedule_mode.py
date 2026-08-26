@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import signal
 import socket
 import tempfile
 import unittest
@@ -245,6 +246,41 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(observed_bind, [("127.0.0.1", 18000)])
 
+    def test_serve_only_stops_background_api_server_after_ctrl_c(self) -> None:
+        args = self._make_args(serve_only=True, host="127.0.0.1", port=8000)
+        config = self._make_config(webui_enabled=False)
+        server_handle = MagicMock()
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", return_value=server_handle), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        server_handle.stop.assert_called_once_with()
+
+    def test_api_wait_stops_background_server_after_sigterm(self) -> None:
+        server_handle = MagicMock()
+        installed_handlers = {}
+
+        def install_handler(signum, handler):
+            if callable(handler):
+                installed_handlers[signum] = handler
+
+        def deliver_sigterm(_seconds):
+            installed_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+        with patch("main.signal.getsignal", return_value=signal.SIG_DFL), \
+             patch("main.signal.signal", side_effect=install_handler), \
+             patch("main.time.sleep", side_effect=deliver_sigterm):
+            main._wait_for_api_server_shutdown(server_handle)
+
+        server_handle.stop.assert_called_once_with()
+
     def test_serve_only_keeps_explicit_cli_bind_over_config(self) -> None:
         args = self._make_args(serve_only=True, host="0.0.0.0", port=8000)
         config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
@@ -269,6 +305,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(log_level="INFO")
 
         class BusySocket:
+            def setsockopt(self, level, option, value):
+                pass
+
             def bind(self, address):
                 raise OSError("address already in use")
 
@@ -305,6 +344,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
             Server = _FakeUvicornServer
 
         class _UnusedSocket:
+            def setsockopt(self, level, option, value):
+                pass
+
             def bind(self, address):
                 pass
 
@@ -346,6 +388,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     raise TypeError("install_signal_handlers is unsupported")
 
         class _UnusedSocket:
+            def setsockopt(self, level, option, value):
+                pass
+
             def bind(self, address):
                 pass
 

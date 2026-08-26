@@ -548,10 +548,11 @@ def _handle_get_portfolio_snapshot(
     account_id: Optional[int] = None,
     cost_method: str = "fifo",
     include_positions: bool = False,
-    include_risk: bool = True,
+    include_risk: bool = False,
+    include_realtime: bool = False,
     as_of: Optional[str] = None,
 ) -> dict:
-    """Get compact portfolio snapshot for account-aware suggestions."""
+    """Get a compact portfolio snapshot without implicit market-wide refreshes."""
     method = (cost_method or "fifo").strip().lower()
     if method not in {"fifo", "avg"}:
         return {"error": "cost_method must be fifo or avg"}
@@ -576,6 +577,7 @@ def _handle_get_portfolio_snapshot(
             account_id=account_id,
             as_of=as_of_date,
             cost_method=method,
+            include_realtime=bool(include_realtime),
         )
         result = {
             "status": "ok",
@@ -602,8 +604,10 @@ def _handle_get_portfolio_snapshot(
 get_portfolio_snapshot_tool = ToolDefinition(
     name="get_portfolio_snapshot",
     description="Get portfolio snapshot summary and optional risk blocks. "
-                "Default returns compact summary for lower token usage; "
-                "set include_positions=true to include full position details.",
+                "Default uses stored portfolio prices and skips risk calculation so a single-stock "
+                "question does not refresh every holding or trigger unrelated market APIs. "
+                "Set include_realtime=true only when the user explicitly needs a live whole-portfolio "
+                "valuation; set include_positions=true to include full position details.",
     parameters=[
         ToolParameter(
             name="account_id",
@@ -630,9 +634,19 @@ get_portfolio_snapshot_tool = ToolDefinition(
         ToolParameter(
             name="include_risk",
             type="boolean",
-            description="Whether to include risk summary block (default: true).",
+            description="Whether to include the whole-portfolio risk summary (default: false).",
             required=False,
-            default=True,
+            default=False,
+        ),
+        ToolParameter(
+            name="include_realtime",
+            type="boolean",
+            description=(
+                "Whether to refresh real-time prices for every portfolio holding (default: false). "
+                "Keep false for single-stock questions to avoid unrelated market requests."
+            ),
+            required=False,
+            default=False,
         ),
         ToolParameter(
             name="as_of",

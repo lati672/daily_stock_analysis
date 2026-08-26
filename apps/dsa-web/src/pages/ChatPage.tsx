@@ -34,6 +34,7 @@ import { useUiLanguage } from '../contexts/UiLanguageContext';
 
 // Quick question examples shown on empty state
 type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
+type MoomooContextMode = 'position' | 'portfolio' | 'today_attribution';
 
 const QUICK_QUESTIONS: Array<{
   label: string;
@@ -50,6 +51,7 @@ const QUICK_QUESTIONS: Array<{
 
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_COMPRESSION_CONFIG_KEY = 'AGENT_CONTEXT_COMPRESSION_ENABLED';
+const AUTO_SEND_DISCORD_STORAGE_KEY = 'dsa_chat_auto_send_discord';
 const STRONG_COMPARE_STOCK_MESSAGE_RE = /比较|对比|\bvs\b|和[^，。,.!?！？]{0,40}比/i;
 const WEAK_COMPARE_STOCK_MESSAGE_RE = /差异(?!化)|区别|不同|相比|对照|比一比/;
 const CHOICE_COMPARE_STOCK_MESSAGE_RE = /哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一/;
@@ -94,6 +96,12 @@ const getMessageSkillNames = (msg: Message): string[] => {
 };
 
 const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg).join('、');
+
+const formatMessageAsMarkdown = (msg: Message): string => {
+  const skillLabel = getMessageSkillLabel(msg);
+  const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${skillLabel ? ` · ${skillLabel}` : ''}`;
+  return [heading, '', msg.content].join('\n');
+};
 
 const isStageDoneSuccessful = (status?: string): boolean => {
   if (!status) return true;
@@ -200,7 +208,7 @@ const restoreActiveStockContextFromMessages = (messages: Message[]): ActiveStock
 };
 
 const ChatPage: React.FC = () => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
@@ -212,6 +220,11 @@ const ChatPage: React.FC = () => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingDiscordMessageIds, setSendingDiscordMessageIds] = useState<Set<string>>(new Set());
+  const [autoSendDiscordEnabled, setAutoSendDiscordEnabled] = useState(() => (
+    typeof window !== 'undefined'
+      && window.localStorage.getItem(AUTO_SEND_DISCORD_STORAGE_KEY) === 'true'
+  ));
   const [isFollowUpContextLoading, setIsFollowUpContextLoading] = useState(false);
   const [sendToast, setSendToast] = useState<{
     type: 'success' | 'error';
@@ -223,6 +236,8 @@ const ChatPage: React.FC = () => {
   const [contextCompressionConfigVersion, setContextCompressionConfigVersion] = useState('');
   const [contextCompressionMaskToken, setContextCompressionMaskToken] = useState('******');
   const [contextCompressionError, setContextCompressionError] = useState<string | null>(null);
+  const [includeMoomooContext, setIncludeMoomooContext] = useState(false);
+  const [moomooContextMode, setMoomooContextMode] = useState<MoomooContextMode>('portfolio');
   const [copiedMessages, setCopiedMessages] = useState<Set<string>>(new Set());
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [watchlistCodes, setWatchlistCodes] = useState<string[]>([]);
@@ -242,6 +257,8 @@ const ChatPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
   const sendToastTimerRef = useRef<number | null>(null);
+  const sendingDiscordMessageIdsRef = useRef<Set<string>>(new Set());
+  const autoSendDiscordEnabledRef = useRef(autoSendDiscordEnabled);
   const followUpHydrationTokenRef = useRef(0);
   const followUpContextRef = useRef<ChatFollowUpContext | null>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -276,6 +293,12 @@ const ChatPage: React.FC = () => {
     return () => {
       isMountedRef.current = false;
     };
+  }, []);
+
+  const updateAutoSendDiscordEnabled = useCallback((enabled: boolean) => {
+    autoSendDiscordEnabledRef.current = enabled;
+    setAutoSendDiscordEnabled(enabled);
+    window.localStorage.setItem(AUTO_SEND_DISCORD_STORAGE_KEY, enabled ? 'true' : 'false');
   }, []);
 
   const loadWatchlist = useCallback(async () => {
@@ -634,6 +657,31 @@ const ChatPage: React.FC = () => {
     const stock = sanitizeFollowUpStockCode(searchParams.get('stock'));
     const name = sanitizeFollowUpStockName(searchParams.get('name'));
     const recordId = parseFollowUpRecordId(searchParams.get('recordId'));
+    const moomooMode = searchParams.get('moomoo');
+    const task = searchParams.get('task');
+    const shouldStartNewChat = searchParams.get('new') === '1';
+    const hasMoomooContext = moomooMode === 'position' || moomooMode === 'portfolio';
+
+    if (shouldStartNewChat) {
+      followUpContextRef.current = null;
+      setActiveStockContext(null);
+      setActiveStockCode(null);
+      requestScrollToBottom('auto');
+      useAgentChatStore.getState().startNewChat();
+    }
+
+    if (hasMoomooContext) {
+      setIncludeMoomooContext(true);
+      setMoomooContextMode(task === 'today-attribution' ? 'today_attribution' : moomooMode);
+    }
+
+    if (!stock && task === 'today-attribution' && hasMoomooContext) {
+      setInput(language === 'en'
+        ? "Explain today's portfolio P/L attribution using my read-only Moomoo holdings. Highlight the largest positive and negative contributors, concentration risk, and what needs attention next."
+        : '请结合我的只读 Moomoo 持仓，解释今日盈亏归因：列出主要正负贡献来源、集中度风险，以及接下来最值得关注的变化。');
+      setSearchParams({}, { replace: true });
+      return;
+    }
 
     if (!stock) {
       setSearchParams({}, { replace: true });
@@ -641,7 +689,11 @@ const ChatPage: React.FC = () => {
     }
 
     const hydrationToken = ++followUpHydrationTokenRef.current;
-    setInput(buildFollowUpPrompt(stock, name));
+    setInput(moomooMode === 'position'
+      ? (language === 'en'
+          ? `Analyze ${name || stock} (${stock}) using my position cost, weight, and current P/L. Explain the risk and give observable conditions for holding, reducing, or waiting.`
+          : `请结合我的持仓成本、仓位和当前盈亏，分析 ${name || stock}（${stock}）的风险，并给出继续持有、减仓或观察所需的确认条件。`)
+      : buildFollowUpPrompt(stock, name));
     setActiveStockCode(stock);
     setActiveStockContext({
       stock_code: stock,
@@ -669,7 +721,51 @@ const ChatPage: React.FC = () => {
       }
     });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [language, requestScrollToBottom, searchParams, setSearchParams]);
+
+  const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
+    if (sendToastTimerRef.current !== null) {
+      window.clearTimeout(sendToastTimerRef.current);
+    }
+    setSendToast(nextToast);
+    sendToastTimerRef.current = window.setTimeout(() => {
+      setSendToast(null);
+      sendToastTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
+  const sendAssistantMessageToDiscord = useCallback(async (
+    message: Message,
+    mode: 'manual' | 'automatic',
+  ) => {
+    if (sendingDiscordMessageIdsRef.current.has(message.id)) return;
+    sendingDiscordMessageIdsRef.current.add(message.id);
+    setSendingDiscordMessageIds(new Set(sendingDiscordMessageIdsRef.current));
+    try {
+      await agentApi.sendDiscord(formatMessageAsMarkdown(message), 'AI 问股回复');
+      if (isMountedRef.current) {
+        showSendFeedback({
+          type: 'success',
+          message: mode === 'automatic'
+            ? '新回复已自动发送到 Discord'
+            : '此条回复已发送到 Discord',
+        }, 3000);
+      }
+    } catch (error) {
+      if (isMountedRef.current) {
+        const parsed = getParsedApiError(error);
+        showSendFeedback({
+          type: 'error',
+          message: parsed.message || 'Discord 发送失败',
+        }, 5000);
+      }
+    } finally {
+      sendingDiscordMessageIdsRef.current.delete(message.id);
+      if (isMountedRef.current) {
+        setSendingDiscordMessageIds(new Set(sendingDiscordMessageIdsRef.current));
+      }
+    }
+  }, [showSendFeedback]);
 
   const handleSend = useCallback(
     async (
@@ -711,13 +807,20 @@ const ChatPage: React.FC = () => {
         ? nextActiveStockContext
         : followUpContextRef.current ?? nextActiveStockContext ?? undefined;
 
+      const contextPayload = {
+        ...(contextForSend ?? {}),
+        ...(includeMoomooContext ? {
+          include_moomoo_portfolio: true,
+          moomoo_context_mode: moomooContextMode,
+        } : {}),
+      };
       const payload = {
         message: msgText,
         session_id: sessionId,
         ...(usedSkillIds.length > 0 ? { skills: usedSkillIds } : {}),
-        context: contextForSend ?? undefined,
+        context: Object.keys(contextPayload).length > 0 ? contextPayload : undefined,
       };
-      await startStream(payload, {
+      const generatedMessage = await startStream(payload, {
         skillNames: usedSkillNames,
         skillName: usedSkillNames.join('、'),
         onAccepted: () => {
@@ -733,8 +836,11 @@ const ChatPage: React.FC = () => {
           requestScrollToBottom('smooth');
         },
       });
+      if (generatedMessage && autoSendDiscordEnabledRef.current) {
+        await sendAssistantMessageToDiscord(generatedMessage, 'automatic');
+      }
     },
-    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream, stockIndex],
+    [activeStockContext, agentAvailable, agentStatus, getSkillNames, includeMoomooContext, input, loading, moomooContextMode, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sendAssistantMessageToDiscord, sessionId, startStream, stockIndex],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -748,17 +854,6 @@ const ChatPage: React.FC = () => {
     setSelectedSkillIds([q.skill]);
     handleSend(q.label, [q.skill], q.stockContext);
   };
-
-  const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
-    if (sendToastTimerRef.current !== null) {
-      window.clearTimeout(sendToastTimerRef.current);
-    }
-    setSendToast(nextToast);
-    sendToastTimerRef.current = window.setTimeout(() => {
-      setSendToast(null);
-      sendToastTimerRef.current = null;
-    }, durationMs);
-  }, []);
 
   const toggleThinking = (msgId: string) => {
     setExpandedThinking((prev) => {
@@ -791,9 +886,7 @@ const ChatPage: React.FC = () => {
   };
 
   const downloadMessageAsMarkdown = useCallback((msg: Message) => {
-    const skillLabel = getMessageSkillLabel(msg);
-    const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${skillLabel ? ` · ${skillLabel}` : ''}`;
-    const content = [heading, '', msg.content].join('\n');
+    const content = formatMessageAsMarkdown(msg);
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1238,7 +1331,7 @@ const ChatPage: React.FC = () => {
         <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden border border-white/6 bg-card/78 glass-card">
           {/* Messages */}
           <ScrollArea
-            className="relative z-10 flex-1"
+            className="relative z-10 flex-1 pt-2 md:pt-3"
             viewportRef={messagesViewportRef}
             onScroll={handleMessagesScroll}
             viewportClassName="space-y-6 p-4 md:p-6"
@@ -1338,8 +1431,13 @@ const ChatPage: React.FC = () => {
                       msg.thinkingSteps &&
                       renderThinkingDetails(msg.thinkingSteps)}
                     {msg.role === 'assistant' ? (
-                      <div className="relative">
-                        <div className="chat-message-actions">
+                      <div>
+                        <div className="chat-prose">
+                          <Markdown remarkPlugins={[remarkGfm]}>
+                            {msg.content}
+                          </Markdown>
+                        </div>
+                        <div className="chat-message-actions" aria-label="回复操作">
                           <button
                             type="button"
                             onClick={() => copyMessageToClipboard(msg.id, msg.content)}
@@ -1356,11 +1454,15 @@ const ChatPage: React.FC = () => {
                           >
                             导出
                           </button>
-                        </div>
-                        <div className="chat-prose pr-20 sm:pr-24">
-                          <Markdown remarkPlugins={[remarkGfm]}>
-                            {msg.content}
-                          </Markdown>
+                          <button
+                            type="button"
+                            disabled={sendingDiscordMessageIds.has(msg.id)}
+                            onClick={() => void sendAssistantMessageToDiscord(msg, 'manual')}
+                            className="chat-copy-btn disabled:cursor-not-allowed disabled:opacity-60"
+                            aria-label="发送此条回复到 Discord"
+                          >
+                            {sendingDiscordMessageIds.has(msg.id) ? '发送中' : 'Discord'}
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -1527,6 +1629,45 @@ const ChatPage: React.FC = () => {
                   className="rounded-xl px-3 py-2 text-xs shadow-none"
                 />
               ) : null}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/6 bg-surface/25 px-3 py-2">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={autoSendDiscordEnabled}
+                    onChange={(event) => updateAutoSendDiscordEnabled(event.target.checked)}
+                    className="chat-skill-checkbox"
+                  />
+                  <span className="font-medium">
+                    {language === 'en' ? 'Auto-send new replies to Discord' : '自动发送新回复到 Discord'}
+                  </span>
+                  <span className="text-xs text-muted-text">
+                    {language === 'en' ? 'Only newly generated AI replies' : '仅发送新生成的 AI 回复'}
+                  </span>
+                </label>
+                <span className="text-xs text-muted-text">
+                  {autoSendDiscordEnabled
+                    ? (language === 'en' ? 'Enabled' : '已启用')
+                    : (language === 'en' ? 'Disabled' : '未启用')}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/6 bg-surface/25 px-3 py-2">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={includeMoomooContext}
+                    onChange={(event) => {
+                      setIncludeMoomooContext(event.target.checked);
+                      if (event.target.checked) setMoomooContextMode('portfolio');
+                    }}
+                    className="chat-skill-checkbox"
+                  />
+                  <span className="font-medium">{language === 'en' ? 'Include my Moomoo holdings' : '结合我的 Moomoo 持仓'}</span>
+                  <span className="text-xs text-muted-text">{language === 'en' ? 'Read-only for this question' : '仅为本次问股读取只读持仓'}</span>
+                </label>
+                <span className="text-xs text-muted-text">
+                  {includeMoomooContext ? (language === 'en' ? 'Included' : '已包含') : (language === 'en' ? 'Not included' : '未包含')}
+                </span>
+              </div>
               {skills.length > 0 && (
                 <div className="space-y-2">
                   <button

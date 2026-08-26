@@ -7,8 +7,8 @@ import ipaddress
 import logging
 import math
 import os
-from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional
+from dataclasses import dataclass, replace
+from typing import Any, Dict, Iterable, List, Optional
 
 from data_provider.us_index_mapping import is_us_stock_code
 from src.services.stock_code_utils import normalize_code
@@ -27,6 +27,7 @@ class _FutuAccount:
 
     acc_id: int
     security_firm: Any
+    role: str
 
 
 @dataclass(frozen=True)
@@ -41,19 +42,81 @@ class _FutuApi:
     SecurityType: Any
     TrdEnv: Any
     TrdMarket: Any
+    Currency: Any = None
+
+
+@dataclass(frozen=True)
+class FutuAccountSnapshot:
+    """Low-cardinality account metadata safe for the private Web workspace."""
+
+    account_id: int
+    role: str
+    security_firm: str
+    position_count: int
+    currency: str
+    market_value: Optional[float]
+    holding_pnl: Optional[float]
+    holding_pnl_pct: Optional[float]
+    total_pnl: Optional[float]
+    total_pnl_pct: Optional[float]
+    today_pnl: Optional[float]
+    today_pnl_pct: Optional[float]
+
+
+@dataclass(frozen=True)
+class FutuPositionSnapshot:
+    """One read-only position returned by Futu OpenD."""
+
+    account_id: int
+    code: str
+    name: str
+    position_side: str
+    quantity: float
+    available_quantity: Optional[float]
+    cost_price: Optional[float]
+    current_price: Optional[float]
+    market_value: Optional[float]
+    holding_pnl: Optional[float]
+    holding_pnl_pct: Optional[float]
+    unrealized_pnl: Optional[float]
+    unrealized_pnl_pct: Optional[float]
+    realized_pnl: Optional[float]
+    today_pnl: Optional[float]
+    today_change_pct: Optional[float]
+    currency: str
+
+
+@dataclass(frozen=True)
+class FutuBrokerSnapshot:
+    """Read-only broker snapshot used by the Web account page."""
+
+    host: str
+    port: int
+    currency: str
+    total_market_value: Optional[float]
+    holding_pnl: Optional[float]
+    holding_pnl_pct: Optional[float]
+    total_pnl: Optional[float]
+    total_pnl_pct: Optional[float]
+    today_pnl: Optional[float]
+    today_pnl_pct: Optional[float]
+    accounts: List[FutuAccountSnapshot]
+    positions: List[FutuPositionSnapshot]
 
 
 _SUPPORTED_ACCOUNT_ROLES = frozenset({"NORMAL", "MASTER"})
 _SUPPORTED_ANALYSIS_MARKETS = frozenset({"US", "HK", "SH", "SZ"})
 _UNKNOWN_SECURITY_TYPES = frozenset({"", "N/A", "NONE", "UNKNOWN", "NAN"})
 _STATIC_INFO_BATCH_SIZE = 100
+_MARKET_SNAPSHOT_BATCH_SIZE = 100
 
 
 def _load_futu_api() -> _FutuApi:
-    """Import the supported Futu SDK surface or raise an actionable error."""
+    """Import the Moomoo/Futu-compatible SDK surface or raise an actionable error."""
 
     try:
-        from futu import (
+        from moomoo import (
+            Currency,
             Market,
             OpenQuoteContext,
             OpenSecTradeContext,
@@ -63,11 +126,26 @@ def _load_futu_api() -> _FutuApi:
             TrdEnv,
             TrdMarket,
         )
-    except ImportError as exc:
-        raise FutuPortfolioError(
-            "未安装 Futu OpenAPI SDK；请先执行 "
-            "`pip install \"futu-api==10.8.6808\"`。"
-        ) from exc
+    except ImportError:
+        try:
+            from futu import (
+                Currency,
+                Market,
+                OpenQuoteContext,
+                OpenSecTradeContext,
+                RET_OK,
+                SecurityFirm,
+                SecurityType,
+                TrdEnv,
+                TrdMarket,
+            )
+        except ImportError as exc:
+            raise FutuPortfolioError(
+                "未安装 Futu OpenAPI SDK；请安装 `moomoo-api`，或执行 "
+                "`pip install \"futu-api==10.8.6808\"`。"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - SDK import initializes logging
+            raise FutuPortfolioError(f"加载 Futu OpenAPI SDK 失败: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 - SDK import initializes its file logger
         raise FutuPortfolioError(f"加载 Futu OpenAPI SDK 失败: {exc}") from exc
 
@@ -80,6 +158,7 @@ def _load_futu_api() -> _FutuApi:
         SecurityType=SecurityType,
         TrdEnv=TrdEnv,
         TrdMarket=TrdMarket,
+        Currency=Currency,
     )
 
 
@@ -110,6 +189,132 @@ def _safe_close(context: Any) -> None:
         context.close()
     except Exception:  # pragma: no cover - closing is best effort
         logger.debug("关闭 Futu OpenD 连接失败", exc_info=True)
+
+
+def _optional_finite_float(value: Any) -> Optional[float]:
+    """Convert an SDK cell to a JSON-safe float, preserving unavailable values."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _sum_complete(values: Iterable[Optional[float]]) -> Optional[float]:
+    """Sum values only when the source returned every component."""
+
+    items = list(values)
+    return sum(items) if items and all(item is not None for item in items) else None
+
+
+def _pnl_percentage(pnl: Optional[float], current_value: Optional[float]) -> Optional[float]:
+    """Return P/L relative to the value before that P/L, when meaningful."""
+
+    if pnl is None or current_value is None:
+        return None
+    basis = current_value - pnl
+    if not math.isfinite(basis) or basis <= 0:
+        return None
+    return pnl / basis * 100
+
+
+def _infer_position_fx_rates(
+    positions: Iterable[FutuPositionSnapshot],
+    *,
+    reporting_currency: str,
+    reporting_market_value: Optional[float],
+) -> Dict[str, float]:
+    """Infer one foreign-currency rate from OpenD's converted market value.
+
+    OpenD returns each position in its native currency while ``accinfo_query``
+    returns the account market value in the requested reporting currency.  When
+    there is exactly one foreign currency, the difference uniquely determines
+    the conversion rate and keeps P/L aligned with the account valuation.
+    """
+
+    items = list(positions)
+    rates = {reporting_currency: 1.0}
+    if reporting_market_value is None or not items:
+        return rates
+    if any(item.market_value is None for item in items):
+        return rates
+    foreign_currencies = {
+        item.currency for item in items if item.currency != reporting_currency
+    }
+    if len(foreign_currencies) != 1:
+        return rates
+    foreign_currency = next(iter(foreign_currencies))
+    reporting_value = sum(
+        item.market_value or 0.0
+        for item in items
+        if item.currency == reporting_currency
+    )
+    foreign_value = sum(
+        item.market_value or 0.0
+        for item in items
+        if item.currency == foreign_currency
+    )
+    converted_foreign_value = reporting_market_value - reporting_value
+    if foreign_value <= 0 or converted_foreign_value <= 0:
+        return rates
+    rate = converted_foreign_value / foreign_value
+    if math.isfinite(rate) and rate > 0:
+        rates[foreign_currency] = rate
+    return rates
+
+
+def _sum_converted_position_field(
+    positions: Iterable[FutuPositionSnapshot],
+    *,
+    field: str,
+    rates: Dict[str, float],
+) -> Optional[float]:
+    """Sum one complete position field after converting to reporting currency."""
+
+    converted: List[Optional[float]] = []
+    for position in positions:
+        value = getattr(position, field)
+        rate = rates.get(position.currency)
+        converted.append(value * rate if value is not None and rate is not None else None)
+    return _sum_complete(converted)
+
+
+def _load_today_change_percentages(
+    api: _FutuApi,
+    host: str,
+    port: int,
+    codes: Iterable[str],
+) -> Dict[str, float]:
+    """Load daily price changes without making portfolio loading depend on quotes."""
+
+    unique_codes = list(dict.fromkeys(code for code in codes if code))
+    if not unique_codes:
+        return {}
+
+    context = None
+    changes: Dict[str, float] = {}
+    try:
+        context = api.OpenQuoteContext(host=host, port=port)
+        for offset in range(0, len(unique_codes), _MARKET_SNAPSHOT_BATCH_SIZE):
+            batch = unique_codes[offset:offset + _MARKET_SNAPSHOT_BATCH_SIZE]
+            ret, data = context.get_market_snapshot(batch)
+            if ret != api.RET_OK:
+                logger.warning("查询 Futu 今日涨幅失败: %s", data)
+                continue
+            for row in _iter_rows(data, "Futu 行情快照查询"):
+                code = str(row.get("code", "") or "").strip().upper()
+                last_price = _optional_finite_float(row.get("last_price"))
+                previous_close = _optional_finite_float(row.get("prev_close_price"))
+                if code and last_price is not None and previous_close is not None and previous_close > 0:
+                    changes[code] = (last_price - previous_close) / previous_close * 100
+    except Exception:  # noqa: BLE001 - quotes are optional enrichment
+        logger.warning("查询 Futu 今日涨幅失败，持仓将继续加载", exc_info=True)
+    finally:
+        _safe_close(context)
+    return changes
 
 
 def _connection_settings() -> tuple[str, int]:
@@ -208,7 +413,11 @@ def _discover_real_accounts(api: _FutuApi, host: str, port: int) -> List[_FutuAc
                 security_firm,
             )
             seen_ids.add(acc_id)
-            accounts.append(_FutuAccount(acc_id=acc_id, security_firm=returned_firm))
+            accounts.append(_FutuAccount(
+                acc_id=acc_id,
+                security_firm=returned_firm,
+                role=_enum_text(row.get("acc_role")),
+            ))
     except FutuPortfolioError:
         raise
     except Exception as exc:  # noqa: BLE001 - translate SDK/network failures
@@ -482,3 +691,213 @@ def load_futu_stock_codes() -> List[str]:
         ", ".join(stock_codes),
     )
     return stock_codes
+
+
+def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
+    """Load accounts and live positions for the read-only Web account page.
+
+    Connection details continue to come from server-side ``FUTU_*`` settings;
+    the browser never receives or submits a Moomoo password or trading unlock
+    credential. Only query APIs are used.
+    """
+
+    api = _load_futu_api()
+    host, port = _connection_settings()
+    accounts = _discover_real_accounts(api, host, port)
+    positions: List[FutuPositionSnapshot] = []
+    position_counts: Dict[int, int] = {}
+    account_metrics: Dict[int, Dict[str, Optional[float]]] = {}
+    reporting_currency = "USD"
+
+    for account in accounts:
+        context = None
+        try:
+            context = api.OpenSecTradeContext(
+                host=host,
+                port=port,
+                filter_trdmarket=api.TrdMarket.NONE,
+                security_firm=account.security_firm,
+            )
+            query_currency = getattr(api.Currency, reporting_currency, None)
+            accinfo_query = getattr(context, "accinfo_query", None)
+            if callable(accinfo_query):
+                accinfo_kwargs = {
+                    "trd_env": api.TrdEnv.REAL,
+                    "acc_id": account.acc_id,
+                    "refresh_cache": True,
+                }
+                if query_currency is not None:
+                    accinfo_kwargs["currency"] = query_currency
+                info_ret, info_data = accinfo_query(**accinfo_kwargs)
+                if info_ret != api.RET_OK:
+                    raise FutuPortfolioError(f"查询 Futu 账户资产失败: {info_data}")
+                info_rows = list(_iter_rows(info_data, "Futu 账户资产查询"))
+                if not info_rows:
+                    raise FutuPortfolioError("Futu 账户资产查询返回了空数据")
+                info = info_rows[0]
+                realized_pnl = _optional_finite_float(info.get("realized_pl"))
+                unrealized_pnl = _optional_finite_float(info.get("unrealized_pl"))
+                total_pnl = _sum_complete([realized_pnl, unrealized_pnl])
+                account_market_value = _optional_finite_float(info.get("market_val"))
+                total_assets = _optional_finite_float(info.get("total_assets"))
+                account_metrics[account.acc_id] = {
+                    "market_value": account_market_value,
+                    "total_assets": total_assets,
+                    "total_pnl": total_pnl,
+                    "total_pnl_pct": _pnl_percentage(total_pnl, total_assets),
+                }
+            ret, data = context.position_list_query(
+                trd_env=api.TrdEnv.REAL,
+                acc_id=account.acc_id,
+                refresh_cache=True,
+                **({"currency": query_currency} if query_currency is not None else {}),
+            )
+            if ret != api.RET_OK:
+                raise FutuPortfolioError(f"查询 Futu 真实持仓失败: {data}")
+            count = 0
+            for row in _iter_rows(data, "Futu 持仓查询"):
+                side = _enum_text(row.get("position_side"))
+                quantity = _optional_finite_float(row.get("qty"))
+                if quantity is None:
+                    raise FutuPortfolioError("Futu 持仓数量无效")
+                if quantity == 0:
+                    continue
+                code = str(row.get("code", "") or "").strip().upper()
+                if not code:
+                    raise FutuPortfolioError("Futu 非零持仓返回了空证券代码")
+                holding_pnl = _optional_finite_float(row.get("pl_val"))
+                unrealized_pnl = _optional_finite_float(row.get("unrealized_pl"))
+                positions.append(FutuPositionSnapshot(
+                    account_id=account.acc_id,
+                    code=code,
+                    name=str(row.get("stock_name", "") or "").strip(),
+                    position_side=side or "UNKNOWN",
+                    quantity=quantity,
+                    available_quantity=_optional_finite_float(
+                        row.get("can_sell_qty")
+                    ),
+                    cost_price=_optional_finite_float(row.get("average_cost")),
+                    current_price=_optional_finite_float(row.get("nominal_price")),
+                    market_value=_optional_finite_float(row.get("market_val")),
+                    holding_pnl=holding_pnl,
+                    holding_pnl_pct=_optional_finite_float(
+                        row.get("pl_ratio_avg_cost")
+                    ),
+                    unrealized_pnl=unrealized_pnl,
+                    unrealized_pnl_pct=_pnl_percentage(
+                        unrealized_pnl,
+                        _optional_finite_float(row.get("market_val")),
+                    ),
+                    realized_pnl=_optional_finite_float(row.get("realized_pl")),
+                    today_pnl=_optional_finite_float(row.get("today_pl_val")),
+                    today_change_pct=None,
+                    currency=_enum_text(row.get("currency")) or reporting_currency,
+                ))
+                count += 1
+            position_counts[account.acc_id] = count
+            account_positions = [
+                item for item in positions if item.account_id == account.acc_id
+            ]
+            metrics = account_metrics.setdefault(account.acc_id, {})
+            position_fx_rates = _infer_position_fx_rates(
+                account_positions,
+                reporting_currency=reporting_currency,
+                reporting_market_value=metrics.get("market_value"),
+            )
+            account_today_pnl = _sum_converted_position_field(
+                account_positions,
+                field="today_pnl",
+                rates=position_fx_rates,
+            )
+            account_holding_pnl = _sum_converted_position_field(
+                account_positions,
+                field="holding_pnl",
+                rates=position_fx_rates,
+            )
+            if account_holding_pnl is None:
+                account_holding_pnl = metrics.get("total_pnl")
+            metrics["holding_pnl"] = account_holding_pnl
+            metrics["holding_pnl_pct"] = _pnl_percentage(
+                account_holding_pnl,
+                metrics.get("market_value"),
+            )
+            if metrics.get("total_pnl") is None:
+                position_total_pnls = [
+                    _sum_complete([item.realized_pnl, item.unrealized_pnl])
+                    for item in account_positions
+                ]
+                converted_total_pnls = [
+                    value * position_fx_rates[item.currency]
+                    if value is not None and item.currency in position_fx_rates
+                    else None
+                    for item, value in zip(account_positions, position_total_pnls)
+                ]
+                metrics["total_pnl"] = _sum_complete(converted_total_pnls)
+                metrics["total_pnl_pct"] = _pnl_percentage(
+                    metrics.get("total_pnl"),
+                    metrics.get("total_assets"),
+                )
+            metrics["today_pnl"] = account_today_pnl
+            metrics["today_pnl_pct"] = _pnl_percentage(
+                account_today_pnl,
+                metrics.get("market_value"),
+            )
+        except FutuPortfolioError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - SDK/network error boundary
+            raise FutuPortfolioError(f"查询 Futu 真实持仓失败: {exc}") from exc
+        finally:
+            _safe_close(context)
+
+    today_changes = _load_today_change_percentages(
+        api,
+        host,
+        port,
+        (position.code for position in positions),
+    )
+    positions = [
+        replace(position, today_change_pct=today_changes.get(position.code))
+        for position in positions
+    ]
+
+    account_snapshots = [
+        FutuAccountSnapshot(
+            account_id=account.acc_id,
+            role=account.role,
+            security_firm=_enum_text(account.security_firm) or "UNKNOWN",
+            position_count=position_counts.get(account.acc_id, 0),
+            currency=reporting_currency,
+            market_value=account_metrics.get(account.acc_id, {}).get("market_value"),
+            holding_pnl=account_metrics.get(account.acc_id, {}).get("holding_pnl"),
+            holding_pnl_pct=account_metrics.get(account.acc_id, {}).get(
+                "holding_pnl_pct"
+            ),
+            total_pnl=account_metrics.get(account.acc_id, {}).get("total_pnl"),
+            total_pnl_pct=account_metrics.get(account.acc_id, {}).get("total_pnl_pct"),
+            today_pnl=account_metrics.get(account.acc_id, {}).get("today_pnl"),
+            today_pnl_pct=account_metrics.get(account.acc_id, {}).get("today_pnl_pct"),
+        )
+        for account in accounts
+    ]
+    total_market_value = _sum_complete(item.market_value for item in account_snapshots)
+    holding_pnl = _sum_complete(item.holding_pnl for item in account_snapshots)
+    total_pnl = _sum_complete(item.total_pnl for item in account_snapshots)
+    today_pnl = _sum_complete(item.today_pnl for item in account_snapshots)
+    total_assets = _sum_complete(
+        account_metrics.get(item.account_id, {}).get("total_assets")
+        for item in account_snapshots
+    )
+    return FutuBrokerSnapshot(
+        host=host,
+        port=port,
+        currency=reporting_currency,
+        total_market_value=total_market_value,
+        holding_pnl=holding_pnl,
+        holding_pnl_pct=_pnl_percentage(holding_pnl, total_market_value),
+        total_pnl=total_pnl,
+        total_pnl_pct=_pnl_percentage(total_pnl, total_assets),
+        today_pnl=today_pnl,
+        today_pnl_pct=_pnl_percentage(today_pnl, total_market_value),
+        accounts=account_snapshots,
+        positions=positions,
+    )

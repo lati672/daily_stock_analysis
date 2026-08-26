@@ -136,7 +136,7 @@ interface AgentChatActions {
   switchSession: (targetSessionId: string) => Promise<void>;
   startNewChat: () => void;
   stopStream: () => Promise<void>;
-  startStream: (payload: ChatStreamRequest, meta?: StreamMeta) => Promise<void>;
+  startStream: (payload: ChatStreamRequest, meta?: StreamMeta) => Promise<Message | null>;
 }
 
 const getInitialSessionId = (): string =>
@@ -298,7 +298,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   },
 
   startStream: async (payload, meta) => {
-    if (get().loading) return;
+    if (get().loading) return null;
     const { abortController: prevAc, sessionId: storeSessionId } = get();
     prevAc?.abort();
 
@@ -340,6 +340,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       progressSteps: [],
       chatError: null,
     });
+    let generatedMessage: Message | null = null;
 
     try {
       const response = await agentApi.chatStream(
@@ -479,21 +480,19 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       const shouldAppend = ownsStream() && !ac.signal.aborted && finalContent !== null;
 
       if (shouldAppend) {
+        generatedMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: finalContent || '（无内容）',
+          skills: payload.skills,
+          skill: payload.skills?.[0],
+          skillNames,
+          skillName,
+          thinkingSteps: [...currentProgressSteps],
+          backend: finalBackend,
+        };
         set((s) => ({
-          messages: [
-            ...s.messages,
-            {
-              id: (Date.now() + 1).toString(),
-              role: 'assistant',
-              content: finalContent || '（无内容）',
-              skills: payload.skills,
-              skill: payload.skills?.[0],
-              skillNames,
-              skillName,
-              thinkingSteps: [...currentProgressSteps],
-              backend: finalBackend,
-            },
-          ],
+          messages: [...s.messages, generatedMessage!],
         }));
       }
 
@@ -523,6 +522,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         await get().loadSessions();
       }
     }
+    return generatedMessage;
   },
   };
 });

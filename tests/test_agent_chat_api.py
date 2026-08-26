@@ -75,6 +75,42 @@ def _sse_events(text: str) -> list[dict]:
     ]
 
 
+def test_send_chat_to_discord_targets_only_discord() -> None:
+    service = MagicMock()
+    service.send_to_discord.return_value = True
+
+    with patch("src.notification.NotificationService", return_value=service):
+        response = asyncio.run(
+            agent_endpoint.send_chat_to_discord(
+                agent_endpoint.SendChatRequest(
+                    title="AI 问股回复",
+                    content="# AI 回复\n\n趋势偏强",
+                )
+            )
+        )
+
+    assert response == {"success": True}
+    service.send_to_discord.assert_called_once_with(
+        "## AI 问股回复\n\n# AI 回复\n\n趋势偏强"
+    )
+    service.send.assert_not_called()
+
+
+def test_send_chat_to_discord_reports_unavailable() -> None:
+    service = MagicMock()
+    service.send_to_discord.return_value = False
+
+    with patch("src.notification.NotificationService", return_value=service):
+        response = asyncio.run(
+            agent_endpoint.send_chat_to_discord(
+                agent_endpoint.SendChatRequest(content="reply")
+            )
+        )
+
+    assert response["success"] is False
+    assert response["error"] == "discord_unavailable"
+
+
 def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path) -> None:
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'trace.db'}")
     session_id = "api-trace-hidden"

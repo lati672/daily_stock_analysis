@@ -42,6 +42,59 @@ class PortfolioAccountListResponse(BaseModel):
     accounts: List[PortfolioAccountItem] = Field(default_factory=list)
 
 
+class FutuBrokerAccountItem(BaseModel):
+    account_id: int
+    role: str
+    security_firm: str
+    position_count: int
+    currency: str = "USD"
+    market_value: Optional[float] = None
+    holding_pnl: Optional[float] = None
+    holding_pnl_pct: Optional[float] = None
+    total_pnl: Optional[float] = None
+    total_pnl_pct: Optional[float] = None
+    today_pnl: Optional[float] = None
+    today_pnl_pct: Optional[float] = None
+
+
+class FutuBrokerPositionItem(BaseModel):
+    account_id: int
+    code: str
+    name: str
+    position_side: str
+    quantity: float
+    available_quantity: Optional[float] = None
+    cost_price: Optional[float] = None
+    current_price: Optional[float] = None
+    market_value: Optional[float] = None
+    holding_pnl: Optional[float] = None
+    holding_pnl_pct: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    unrealized_pnl_pct: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    today_pnl: Optional[float] = None
+    today_change_pct: Optional[float] = None
+    currency: str = ""
+
+
+class FutuBrokerSnapshotResponse(BaseModel):
+    connected: bool = True
+    provider: Literal["moomoo"] = "moomoo"
+    host: str
+    port: int
+    read_only: bool = True
+    currency: str = "USD"
+    total_market_value: Optional[float] = None
+    holding_pnl: Optional[float] = None
+    holding_pnl_pct: Optional[float] = None
+    total_pnl: Optional[float] = None
+    total_pnl_pct: Optional[float] = None
+    today_pnl: Optional[float] = None
+    today_pnl_pct: Optional[float] = None
+    accounts: List[FutuBrokerAccountItem] = Field(default_factory=list)
+    positions: List[FutuBrokerPositionItem] = Field(default_factory=list)
+
+
 class PortfolioTradeCreateRequest(BaseModel):
     account_id: int
     symbol: str = Field(..., min_length=1, max_length=16)

@@ -14,6 +14,7 @@ from api.v1.errors import api_error
 from api.v1.schemas.analysis import DuplicateTaskErrorResponse, TaskAccepted
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.portfolio import (
+    FutuBrokerSnapshotResponse,
     PortfolioAccountCreateRequest,
     PortfolioAccountItem,
     PortfolioAccountListResponse,
@@ -48,6 +49,40 @@ from src.services.portfolio_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post(
+    "/brokers/moomoo/connect",
+    response_model=FutuBrokerSnapshotResponse,
+    responses={503: {"model": ErrorResponse}},
+    summary="Connect to Moomoo OpenD and load read-only positions",
+)
+def connect_moomoo() -> FutuBrokerSnapshotResponse:
+    from src.brokers.futu.portfolio import (
+        FutuPortfolioError,
+        load_futu_broker_snapshot,
+    )
+
+    try:
+        snapshot = load_futu_broker_snapshot()
+        return FutuBrokerSnapshotResponse(
+            host=snapshot.host,
+            port=snapshot.port,
+            currency=snapshot.currency,
+            total_market_value=snapshot.total_market_value,
+            holding_pnl=snapshot.holding_pnl,
+            holding_pnl_pct=snapshot.holding_pnl_pct,
+            total_pnl=snapshot.total_pnl,
+            total_pnl_pct=snapshot.total_pnl_pct,
+            today_pnl=snapshot.today_pnl,
+            today_pnl_pct=snapshot.today_pnl_pct,
+            accounts=[item.__dict__ for item in snapshot.accounts],
+            positions=[item.__dict__ for item in snapshot.positions],
+        )
+    except FutuPortfolioError as exc:
+        raise api_error(503, "moomoo_unavailable", str(exc))
+    except Exception as exc:
+        raise _internal_error("Connect to Moomoo failed", exc)
 
 
 def _bad_request(exc: Exception) -> HTTPException:

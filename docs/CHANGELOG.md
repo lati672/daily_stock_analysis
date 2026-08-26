@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 从账户页进入“AI 分析”或“AI 归因”时始终新建独立问股对话，并保留预填问题、证券上下文与只读 Moomoo 持仓选项，避免污染最近的历史会话。
+- [改进] Agent `get_portfolio_snapshot` 默认使用已保存的持仓价格并跳过风险计算，单股问答不再刷新全部组合或触发无关的港股行情接口；全组合实时估值与风险分析仍可显式启用。
+- [改进] 问股消息区与顶部边框之间增加固定留白，并将每条 AI 回复的复制、导出和 Discord 操作移到正文下方，避免长文本与操作按钮重叠。
+- [新功能] 问股页新增持久化的“自动发送新回复到 Discord”开关，并为每条 AI 回复增加独立 Discord 发送操作；自动与单条发送只投递新回复到 Discord，顶部原有“发送”仍用于将完整会话发送到全部已配置通知渠道。
+- [修复] Agent 使用 `gpt-5.6-terra` 经 Chat Completions 执行工具调用时自动设置 `reasoning_effort=none`，避免 OpenAI 拒绝工具与推理参数组合；纯文本调用保持原有推理设置。
+- [修复] `python main.py --webui-only` 和 `--serve` 显式监听 `SIGINT` / `SIGTERM`，收到 `Ctrl+C` 或终止信号后通知后台 Uvicorn 优雅退出并等待端口释放；启动前端口检查使用与 Uvicorn 一致的地址复用语义，避免将刚关闭连接的 TCP 过渡状态误报为端口仍被占用。
+- [新功能] Web 新增“账户”页，打开页面即通过后端只读连接已登录的 Moomoo OpenD，以美股在上、港股在下的分区表格展示实时持仓并支持强制刷新；顶部与美股/港股分区均展示总市值、持仓盈亏与今日盈亏，主表使用 OpenD 平均成本口径，增加证券市值仓位及今日/持仓/未实现/已实现盈亏，隐藏可用数量并以带符号的双行格式展示未实现盈亏；后端兼容 `moomoo` / `futu` SDK，浏览器不接收登录或交易解锁密码。
+- [修复] Moomoo 账户页按 OpenD 每项持仓的原生币种展示价格、市值和盈亏，港股使用 HKD，并在同市场同币种范围内计算仓位，避免直接混加 USD 与 HKD。
+- [改进] Moomoo 账户页通过行情快照计算并展示持仓证券的今日涨幅，默认按今日涨幅降序排列；所有表头均支持“降序 → 升序 → 恢复默认”的三段点击循环，当前生效方向使用强调色箭头标识，缺失值始终置底。
+- [改进] Moomoo 账户页精简港股金额展示，仅在港股分区的总市值、持仓盈亏和今日盈亏汇总中保留 `HKD`，持仓明细行不再重复显示币种代码。
+- [新功能] Moomoo 账户页与问股联动：每项持仓可带入成本、仓位和盈亏进行 AI 分析，问股页提供显式“结合我的 Moomoo 持仓”只读开关，账户概览可发起由程序确定性计算、LLM 负责解释的今日盈亏归因；发送给模型的上下文不包含账户 ID、OpenD 地址或交易能力。
+- [修复] Moomoo 混合 USD/HKD 账户使用 OpenD 的 USD 账户总市值与原币持仓市值推导同快照 HKD→USD 汇率，将港股持仓盈亏与今日盈亏折算为 USD 后再计算账户顶部汇总，避免混合币种账户长期显示为空。
+- [修复] 环境通知测试不再将任意已配置渠道误判为企业微信，并对 Discord 请求异常中的敏感 Webhook URL 做日志脱敏。
 - [修复] 将 `TencentFetcher` 的默认优先级从与 Efinance 并列的 `0` 调整为最终兜底的 `5`，避免 Efinance 短暂失败时越过其余 A 股日 K 数据源，并新增 `TENCENT_PRIORITY` 环境变量用于显式覆盖（refs #2032）。
 - [修复] macOS unsigned 打包显式禁用 Electron 签名与 Hardened Runtime，在冻结后端首次执行前及 electron-builder `afterPack` 阶段清理残缺签名，并对原始应用和 DMG 挂载产物执行签名审计，避免再次发布带损坏签名的桌面包；该缓解不替代 Apple Developer 签名与公证（refs #2075）。
 - [修复] WebUI 分开展示发布版本、代码版本与构建时间，并通过构建输入摘要识别 `rsync -a` 保留时间戳造成的旧静态资源复用（fixes #2093）。

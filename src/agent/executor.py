@@ -627,6 +627,26 @@ def prepare_agent_chat(
                 ]
             )
 
+        moomoo_context = effective_context.get("moomoo_portfolio_context")
+        if isinstance(moomoo_context, dict):
+            history_messages.extend(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "[系统提供的只读实时 Moomoo 持仓上下文]\n"
+                            "以下金额、仓位和今日盈亏归因均由程序确定性计算。请直接使用这些数值进行解释，"
+                            "不要重新推算，也不要建议或尝试执行任何交易指令。上下文不含账户标识。\n"
+                            + json.dumps(moomoo_context, ensure_ascii=False)
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "好的，我会把这些只读持仓数据作为分析背景，并将事实、推断和建议明确区分。",
+                    },
+                ]
+            )
+
     return PreparedAgentChat(
         system_prompt=system_prompt,
         history_messages=history_messages,
