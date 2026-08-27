@@ -1984,7 +1984,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             return value
 
         with (
-            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "0.25"}, clear=False),
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "1.0"}, clear=False),
             patch.object(provider, "_find_board_change", side_effect=lambda _topic: record_remaining({})),
             patch.object(provider, "_is_industry_hotspot", side_effect=lambda _topic: record_remaining(False)),
             patch.object(
@@ -2007,7 +2007,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(detail["leader_stocks"][0]["code"], "000001")
         self.assertEqual(len(observed_timeouts), 5)
-        self.assertTrue(all(0 < timeout <= 0.25 for timeout in observed_timeouts))
+        self.assertTrue(all(0 < timeout <= 1.0 for timeout in observed_timeouts))
         self.assertTrue(all(
             later < earlier
             for earlier, later in zip(observed_timeouts, observed_timeouts[1:])

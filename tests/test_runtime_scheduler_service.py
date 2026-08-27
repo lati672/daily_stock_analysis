@@ -340,6 +340,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             self.assertIn("timed out after 1s", status["last_error"])
 
             service._analysis_process_target = _successful_spawn_runner
+            service._analysis_timeout_seconds = lambda: 5
             self.assertTrue(service.run_now()["accepted"])
 
             deadline = time.monotonic() + 4
@@ -476,8 +477,17 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
 
                 self.assertFalse(service.status()["running"])
                 self.assertIn("exited without a result", service.status()["last_error"])
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                child_state = subprocess.run(
+                    ["ps", "-o", "state=", "-p", str(child_pid)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout.strip()
+                self.assertTrue(
+                    not child_state or child_state.startswith("Z"),
+                    f"descendant process is still running with state {child_state!r}",
+                )
             finally:
                 if process_group_id is not None:
                     try:
@@ -518,8 +528,17 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                         time.sleep(0.05)
 
                 self.assertFalse(service.status()["running"])
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                child_state = subprocess.run(
+                    ["ps", "-o", "state=", "-p", str(child_pid)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout.strip()
+                self.assertTrue(
+                    not child_state or child_state.startswith("Z"),
+                    f"descendant process is still running with state {child_state!r}",
+                )
             finally:
                 for group_id in (child_pid, process_group_id):
                     if group_id is None:

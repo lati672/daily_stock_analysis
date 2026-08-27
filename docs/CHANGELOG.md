@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] Agent 历史分析上下文缺失时返回结构化 `not_found` 结果而不是将工具执行标记为失败，并移除问股组合超时路径中的首次懒导入开销。
+- [测试] 隔离系统配置测试与本机运行时环境变量，修正告警市场和 TickFlow 文案的过期前端断言，并让 deadline、调度器与 POSIX 子进程测试验证实际运行契约而非平台清理时序。
 - [改进] 从账户页进入“AI 分析”或“AI 归因”时始终新建独立问股对话，并保留预填问题、证券上下文与只读 Moomoo 持仓选项，避免污染最近的历史会话。
 - [改进] Agent `get_portfolio_snapshot` 默认使用已保存的持仓价格并跳过风险计算，单股问答不再刷新全部组合或触发无关的港股行情接口；全组合实时估值与风险分析仍可显式启用。
 - [改进] 问股消息区与顶部边框之间增加固定留白，并将每条 AI 回复的复制、导出和 Discord 操作移到正文下方，避免长文本与操作按钮重叠。

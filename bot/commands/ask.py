@@ -13,6 +13,7 @@ import logging
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
 from bot.commands.base import BotCommand
@@ -658,8 +659,6 @@ class AskCommand(BotCommand):
             except Exception as exc:
                 logger.warning("[AskCommand] Portfolio overlay failed: %s", exc)
                 return ""
-
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
         pool = ThreadPoolExecutor(max_workers=1)
         future = pool.submit(_render_overlay)

@@ -39,6 +39,13 @@ class SystemConfigApiTestCase(unittest.TestCase):
     """System config API tests in isolation without loading the full app."""
 
     def setUp(self) -> None:
+        preserved_env = {
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
+            if key in os.environ
+        }
+        self._environment_patch = patch.dict(os.environ, preserved_env, clear=True)
+        self._environment_patch.start()
         auth._auth_enabled = None
         auth._session_secret = None
         auth._password_hash_salt = None
@@ -84,6 +91,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
         else:
             os.environ["DATABASE_PATH"] = self._orig_database_path
         self.temp_dir.cleanup()
+        self._environment_patch.stop()
 
     @staticmethod
     def _build_request(cookies: dict[str, str] | None = None) -> SimpleNamespace:

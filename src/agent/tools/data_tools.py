@@ -449,7 +449,11 @@ def _handle_get_analysis_context(stock_code: str) -> dict:
     check_tool_execution()
 
     if context is None:
-        return {"error": f"No analysis context in DB for {stock_code}"}
+        return {
+            "status": "not_found",
+            "stock_code": stock_code,
+            "message": f"No analysis context in DB for {stock_code}",
+        }
 
     # Return safely serializable version (remove raw_data to save tokens)
     safe_context = {}

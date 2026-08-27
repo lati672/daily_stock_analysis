@@ -378,11 +378,12 @@ def test_market_hotspot_service_bounds_ranking_fetches() -> None:
     started_at = time.monotonic()
     try:
         context = service.get_hotspots(market="cn", trade_date="2026-07-04")
+        request_elapsed = time.monotonic() - started_at
     finally:
         fetcher.release.set()
         _wait_for_market_hotspot_workers_to_drain()
 
-    assert time.monotonic() - started_at < 0.2
+    assert request_elapsed < 0.2
     assert context["status"] == "unknown"
     assert fetcher.sector_calls == 1
     assert fetcher.concept_calls == 1
