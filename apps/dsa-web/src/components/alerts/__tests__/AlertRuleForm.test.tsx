@@ -94,6 +94,22 @@ describe('AlertRuleForm', () => {
     });
   });
 
+  it('submits a one-shot notification policy when selected', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: 'meta' } });
+    fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '750' } });
+    fireEvent.click(screen.getByLabelText('成功通知后自动停用'));
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        target: 'META',
+        notificationPolicy: { disableAfterTrigger: true },
+      }));
+    });
+  });
+
   it('submits technical indicator rule payloads', async () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 

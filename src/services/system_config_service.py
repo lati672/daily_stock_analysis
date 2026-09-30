@@ -302,9 +302,19 @@ class SystemConfigService:
         "astrbot": ("ASTRBOT_URL",),
     }
 
-    def __init__(self, manager: Optional[ConfigManager] = None, runtime_scheduler: Optional[Any] = None):
+    def __init__(
+        self,
+        manager: Optional[ConfigManager] = None,
+        runtime_scheduler: Optional[Any] = None,
+        moomoo_daily_report_scheduler: Optional[Any] = None,
+    ):
         self._manager = manager or ConfigManager()
         self._runtime_scheduler = runtime_scheduler
+        self._moomoo_daily_report_scheduler = moomoo_daily_report_scheduler
+
+    def bind_moomoo_daily_report_scheduler(self, scheduler: Any) -> None:
+        """Attach the optional digest scheduler after app service construction."""
+        self._moomoo_daily_report_scheduler = scheduler
 
     def get_schema(self) -> Dict[str, Any]:
         """Return grouped schema metadata for UI rendering."""
@@ -2120,6 +2130,16 @@ class SystemConfigService:
             except Exception as exc:  # pragma: no cover - defensive branch
                 logger.error("Runtime scheduler reconcile failed: %s", exc, exc_info=True)
                 warnings.append("Configuration updated but runtime scheduler reconcile failed")
+
+        if self._moomoo_daily_report_scheduler is not None and submitted_keys & {
+            "MOOMOO_DAILY_REPORT_ENABLED",
+            "MOOMOO_DAILY_REPORT_TIME",
+        }:
+            try:
+                self._moomoo_daily_report_scheduler.reconcile_from_config()
+            except Exception as exc:  # pragma: no cover - defensive runtime boundary
+                logger.error("Moomoo daily report scheduler reconcile failed: %s", exc, exc_info=True)
+                warnings.append("Configuration updated but Moomoo daily report scheduler reconcile failed")
 
         return {
             "success": True,

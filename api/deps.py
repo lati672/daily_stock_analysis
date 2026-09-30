@@ -19,6 +19,7 @@ from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.system_config_service import SystemConfigService
 from src.services.runtime_scheduler import RuntimeSchedulerService
+from src.services.moomoo_daily_report_scheduler import MoomooDailyReportScheduler
 from src.services.agent_chat_session_service import AgentChatSessionService
 
 
@@ -84,4 +85,13 @@ def get_runtime_scheduler_service(request: Request) -> RuntimeSchedulerService:
     if service is None:
         service = RuntimeSchedulerService()
         request.app.state.runtime_scheduler_service = service
+    return service
+
+
+def get_moomoo_daily_report_scheduler(request: Request) -> MoomooDailyReportScheduler:
+    """Get the app-lifecycle Moomoo daily report scheduler."""
+    service = getattr(request.app.state, "moomoo_daily_report_scheduler", None)
+    if service is None:
+        service = MoomooDailyReportScheduler()
+        request.app.state.moomoo_daily_report_scheduler = service
     return service

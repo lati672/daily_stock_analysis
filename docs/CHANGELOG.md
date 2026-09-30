@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+
+- [修复] Moomoo 账户页今日涨幅与持仓现价使用同一交易时段，盘前、常规时段和盘后分别匹配对应行情，避免盘前盈亏与上一交易日涨幅方向矛盾。
+- [改进] 配置 Futu OpenD 后港股历史日 K 默认优先使用 Futu，空结果或失败时保留现有数据源回退链。
+- [新功能] Moomoo 账户资产新增 AUD、USD、HKD 分币种现金余额、可提金额和现金购买力展示，数据来自 OpenD 只读账户资金接口且不跨币种直接混加。
+- [新功能] 告警规则新增“成功通知后自动停用”选项；一次性规则仅在 Discord 等真实通知渠道至少一个发送成功后停用，发送失败时保持启用并允许后续重试。
+- [新功能] Moomoo 账户页港股分区新增 HKD/USD 显示开关，默认保持港币；切换后使用同一 OpenD 账户快照推导的汇率将港股汇总、价格、市值与盈亏统一换算为美元，并记住浏览器显示偏好。
+- [新功能] Moomoo 账户页新增服务端持久化的自动持仓日报开关、运行状态和手动发送入口；WebUI/API/Desktop 可在独立于普通分析调度的服务器本地时间读取只读持仓，生成盈亏归因、主要新闻、集中度与明日关注点，并仅发送到 Discord；美股周末及休市日自动跳过并在下一交易日恢复。
+- [文档] 新增本 fork 的自定义功能、依赖边界、upstream 同步风险与验收清单说明。
+- [改进] 将 Futu OpenAPI Python SDK 固定版本从 `10.8.6808` 升级至 `10.9.6908`，并同步安装提示、配置说明与发行契约测试。
 - [修复] Agent 历史分析上下文缺失时返回结构化 `not_found` 结果而不是将工具执行标记为失败，并移除问股组合超时路径中的首次懒导入开销。
 - [测试] 隔离系统配置测试与本机运行时环境变量，修正告警市场和 TickFlow 文案的过期前端断言，并让 deadline、调度器与 POSIX 子进程测试验证实际运行契约而非平台清理时序。
 - [改进] 从账户页进入“AI 分析”或“AI 归因”时始终新建独立问股对话，并保留预填问题、证券上下文与只读 Moomoo 持仓选项，避免污染最近的历史会话。

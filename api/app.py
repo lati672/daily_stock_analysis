@@ -178,6 +178,7 @@ from src.services.runtime_scheduler import (
     RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
     RuntimeSchedulerService,
 )
+from src.services.moomoo_daily_report_scheduler import MoomooDailyReportScheduler
 from src.services.stock_index_remote_service import (
     get_remote_stock_index_cache_path,
     refresh_remote_stock_index_cache,
@@ -285,9 +286,19 @@ async def app_lifespan(app: FastAPI):
         app.state.runtime_scheduler_service.reconcile_from_config(
             run_immediately=runtime_run_immediately,
         )
+    app.state.moomoo_daily_report_scheduler = MoomooDailyReportScheduler()
+    if not runtime_suppress_start:
+        app.state.moomoo_daily_report_scheduler.reconcile_from_config()
     app.state.system_config_service = SystemConfigService(
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
+    bind_daily_report_scheduler = getattr(
+        app.state.system_config_service,
+        "bind_moomoo_daily_report_scheduler",
+        None,
+    )
+    if callable(bind_daily_report_scheduler):
+        bind_daily_report_scheduler(app.state.moomoo_daily_report_scheduler)
     _schedule_stock_index_background_refresh(app, "startup")
     # 名称解析器的 AkShare 缓存预热：命中磁盘缓存则零网络加载，否则发起
     # 后台单飞拉取。把冷启动等待从首个用户请求挪到进程启动窗口。
@@ -308,6 +319,10 @@ async def app_lifespan(app: FastAPI):
         if runtime_scheduler is not None:
             runtime_scheduler.stop()
             delattr(app.state, "runtime_scheduler_service")
+        daily_report_scheduler = getattr(app.state, "moomoo_daily_report_scheduler", None)
+        if daily_report_scheduler is not None:
+            daily_report_scheduler.stop()
+            delattr(app.state, "moomoo_daily_report_scheduler")
 
 
 def create_app(static_dir: Optional[Path] = None) -> FastAPI:

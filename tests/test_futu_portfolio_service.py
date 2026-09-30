@@ -241,6 +241,15 @@ class FutuPortfolioServiceTest(unittest.TestCase):
             "realized_pl": "N/A",
             "unrealized_pl": "N/A",
             "currency": "USD",
+            "au_cash": 3.57,
+            "au_avl_withdrawal_cash": 3.57,
+            "aud_net_cash_power": 3.57,
+            "us_cash": 2790.37,
+            "us_avl_withdrawal_cash": 1383.57,
+            "usd_net_cash_power": 2790.37,
+            "hk_cash": 720.36,
+            "hk_avl_withdrawal_cash": 720.36,
+            "hkd_net_cash_power": 720.36,
         }])
         with patch.dict("os.environ", {}, clear=True), patch.object(
             service, "_load_futu_api", return_value=api
@@ -259,15 +268,78 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         self.assertEqual(snapshot.positions[0].holding_pnl, 95.0)
         self.assertEqual(snapshot.positions[0].holding_pnl_pct, 5.25)
         self.assertAlmostEqual(snapshot.positions[0].today_change_pct, 2.7027027)
+        self.assertEqual(snapshot.positions[0].exchange_rate_to_reporting_currency, 1.0)
         self.assertAlmostEqual(snapshot.positions[0].unrealized_pnl_pct, 5.2631579)
         self.assertEqual(snapshot.total_market_value, 1900.0)
         self.assertEqual(snapshot.holding_pnl, 95.0)
         self.assertAlmostEqual(snapshot.holding_pnl_pct, 5.2631579)
         self.assertEqual(snapshot.total_pnl, 120.0)
         self.assertEqual(snapshot.today_pnl, 38.0)
+        self.assertEqual(
+            [(item.currency, item.cash) for item in snapshot.cash_balances],
+            [("AUD", 3.57), ("USD", 2790.37), ("HKD", 720.36)],
+        )
+        self.assertEqual(snapshot.cash_balances[1].available_for_withdrawal, 1383.57)
+        self.assertEqual(snapshot.cash_balances[1].net_cash_power, 2790.37)
         self.assertTrue(all(ctx.closed for ctx in trade_contexts))
         self.assertEqual(quote_contexts[0].market_snapshot_queries, [["US.AAPL"]])
         self.assertTrue(all(ctx.closed for ctx in quote_contexts))
+
+    def _position_at_price(self, current_price: float) -> service.FutuPositionSnapshot:
+        return service.FutuPositionSnapshot(
+            account_id=1001,
+            code="US.META",
+            name="Meta Platforms",
+            position_side="LONG",
+            quantity=2.419,
+            available_quantity=2.419,
+            cost_price=649.898,
+            current_price=current_price,
+            market_value=current_price * 2.419,
+            holding_pnl=193.58,
+            holding_pnl_pct=12.31,
+            unrealized_pnl=193.58,
+            unrealized_pnl_pct=12.31,
+            realized_pnl=117.26,
+            today_pnl=-21.45,
+            today_change_pct=None,
+            currency="USD",
+        )
+
+    def _load_meta_today_change(self, current_price: float) -> float:
+        api = _fake_api(
+            [],
+            [],
+            market_snapshots={
+                "US.META": {
+                    "last_price": 738.79,
+                    "prev_close_price": 715.62,
+                    "pre_price": 730.0,
+                    "pre_change_rate": -1.189,
+                    "after_price": 743.3,
+                    "after_change_rate": 0.61,
+                }
+            },
+        )
+        result = service._load_today_change_percentages(
+            api,
+            "127.0.0.1",
+            11111,
+            [self._position_at_price(current_price)],
+        )
+        return result["US.META"]
+
+    def test_today_change_uses_premarket_quote_matching_nominal_price(self):
+        self.assertEqual(self._load_meta_today_change(729.923), -1.189)
+
+    def test_today_change_uses_regular_quote_matching_nominal_price(self):
+        self.assertAlmostEqual(
+            self._load_meta_today_change(738.79),
+            3.2377518795,
+        )
+
+    def test_today_change_uses_after_hours_quote_matching_nominal_price(self):
+        self.assertEqual(self._load_meta_today_change(743.28), 0.61)
 
     def test_mixed_usd_hkd_pnl_is_converted_to_account_usd(self):
         trade_contexts = []
@@ -314,6 +386,12 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot.today_pnl, 22.8)
         self.assertAlmostEqual(snapshot.total_pnl, 228.0)
         self.assertEqual(snapshot.currency, "USD")
+        rates = {
+            item.code: item.exchange_rate_to_reporting_currency
+            for item in snapshot.positions
+        }
+        self.assertEqual(rates["US.AAPL"], 1.0)
+        self.assertAlmostEqual(rates["HK.00700"], 0.128)
 
     def test_missing_sdk_uses_actionable_install_error(self):
         with patch(
@@ -325,7 +403,7 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         ) as raised:
             service._load_futu_api()
 
-        self.assertIn('pip install "futu-api==10.8.6808"', str(raised.exception))
+        self.assertIn('pip install "futu-api==10.9.6908"', str(raised.exception))
 
     def test_sdk_initialization_failure_uses_portfolio_error_boundary(self):
         with patch(

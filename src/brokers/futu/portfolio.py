@@ -7,7 +7,7 @@ import ipaddress
 import logging
 import math
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Optional
 
 from data_provider.us_index_mapping import is_us_stock_code
@@ -64,6 +64,17 @@ class FutuAccountSnapshot:
 
 
 @dataclass(frozen=True)
+class FutuCashBalanceSnapshot:
+    """One native-currency cash balance returned by ``accinfo_query``."""
+
+    account_id: int
+    currency: str
+    cash: float
+    available_for_withdrawal: Optional[float]
+    net_cash_power: Optional[float]
+
+
+@dataclass(frozen=True)
 class FutuPositionSnapshot:
     """One read-only position returned by Futu OpenD."""
 
@@ -84,6 +95,7 @@ class FutuPositionSnapshot:
     today_pnl: Optional[float]
     today_change_pct: Optional[float]
     currency: str
+    exchange_rate_to_reporting_currency: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +114,7 @@ class FutuBrokerSnapshot:
     today_pnl_pct: Optional[float]
     accounts: List[FutuAccountSnapshot]
     positions: List[FutuPositionSnapshot]
+    cash_balances: List[FutuCashBalanceSnapshot] = field(default_factory=list)
 
 
 _SUPPORTED_ACCOUNT_ROLES = frozenset({"NORMAL", "MASTER"})
@@ -109,6 +122,28 @@ _SUPPORTED_ANALYSIS_MARKETS = frozenset({"US", "HK", "SH", "SZ"})
 _UNKNOWN_SECURITY_TYPES = frozenset({"", "N/A", "NONE", "UNKNOWN", "NAN"})
 _STATIC_INFO_BATCH_SIZE = 100
 _MARKET_SNAPSHOT_BATCH_SIZE = 100
+_CASH_FIELD_MAP = {
+    "AUD": ("au_cash", "au_avl_withdrawal_cash", "aud_net_cash_power"),
+    "USD": ("us_cash", "us_avl_withdrawal_cash", "usd_net_cash_power"),
+    "HKD": ("hk_cash", "hk_avl_withdrawal_cash", "hkd_net_cash_power"),
+}
+
+
+def _extract_cash_balances(account_id: int, info: Dict[str, Any]) -> List[FutuCashBalanceSnapshot]:
+    """Extract native-currency balances without converting or combining them."""
+    balances: List[FutuCashBalanceSnapshot] = []
+    for currency, (cash_field, withdrawal_field, power_field) in _CASH_FIELD_MAP.items():
+        cash = _optional_finite_float(info.get(cash_field))
+        if cash is None:
+            continue
+        balances.append(FutuCashBalanceSnapshot(
+            account_id=account_id,
+            currency=currency,
+            cash=cash,
+            available_for_withdrawal=_optional_finite_float(info.get(withdrawal_field)),
+            net_cash_power=_optional_finite_float(info.get(power_field)),
+        ))
+    return balances
 
 
 def _load_futu_api() -> _FutuApi:
@@ -142,7 +177,7 @@ def _load_futu_api() -> _FutuApi:
         except ImportError as exc:
             raise FutuPortfolioError(
                 "未安装 Futu OpenAPI SDK；请安装 `moomoo-api`，或执行 "
-                "`pip install \"futu-api==10.8.6808\"`。"
+                "`pip install \"futu-api==10.9.6908\"`。"
             ) from exc
         except Exception as exc:  # noqa: BLE001 - SDK import initializes logging
             raise FutuPortfolioError(f"加载 Futu OpenAPI SDK 失败: {exc}") from exc
@@ -286,11 +321,16 @@ def _load_today_change_percentages(
     api: _FutuApi,
     host: str,
     port: int,
-    codes: Iterable[str],
+    positions: Iterable[FutuPositionSnapshot],
 ) -> Dict[str, float]:
-    """Load daily price changes without making portfolio loading depend on quotes."""
+    """Load price changes for the same session as each position's nominal price."""
 
-    unique_codes = list(dict.fromkeys(code for code in codes if code))
+    current_prices = {
+        position.code: position.current_price
+        for position in positions
+        if position.code
+    }
+    unique_codes = list(current_prices)
     if not unique_codes:
         return {}
 
@@ -308,8 +348,40 @@ def _load_today_change_percentages(
                 code = str(row.get("code", "") or "").strip().upper()
                 last_price = _optional_finite_float(row.get("last_price"))
                 previous_close = _optional_finite_float(row.get("prev_close_price"))
-                if code and last_price is not None and previous_close is not None and previous_close > 0:
-                    changes[code] = (last_price - previous_close) / previous_close * 100
+                if not code or last_price is None or previous_close is None or previous_close <= 0:
+                    continue
+
+                candidates = [
+                    (last_price, (last_price - previous_close) / previous_close * 100)
+                ]
+                for prefix in ("pre", "after"):
+                    extended_price = _optional_finite_float(row.get(f"{prefix}_price"))
+                    if extended_price is None or extended_price <= 0:
+                        continue
+                    extended_change = _optional_finite_float(
+                        row.get(f"{prefix}_change_rate")
+                    )
+                    if extended_change is None:
+                        extended_change = (
+                            (extended_price - last_price) / last_price * 100
+                            if last_price > 0
+                            else None
+                        )
+                    if extended_change is not None:
+                        candidates.append((extended_price, extended_change))
+
+                current_price = current_prices.get(code)
+                if current_price is None:
+                    changes[code] = candidates[0][1]
+                    continue
+
+                # ``nominal_price`` follows the active quote session. Select the
+                # regular/pre-market/after-hours snapshot whose price is closest
+                # to it so the displayed percentage and P/L share one baseline.
+                _, changes[code] = min(
+                    candidates,
+                    key=lambda candidate: abs(candidate[0] - current_price),
+                )
     except Exception:  # noqa: BLE001 - quotes are optional enrichment
         logger.warning("查询 Futu 今日涨幅失败，持仓将继续加载", exc_info=True)
     finally:
@@ -336,7 +408,7 @@ def _connection_settings() -> tuple[str, int]:
         address = None
     if address is not None and address.version != 4:
         raise FutuPortfolioError(
-            "futu-api==10.8.6808 的网络层仅支持 IPv4；"
+            "当前 Futu 集成的网络层仅支持 IPv4；"
             f"FUTU_OPEND_HOST 当前为 {host!r}，请改用 IPv4 地址或可解析到 IPv4 的主机名。"
         )
     return host, port
@@ -705,6 +777,7 @@ def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
     host, port = _connection_settings()
     accounts = _discover_real_accounts(api, host, port)
     positions: List[FutuPositionSnapshot] = []
+    cash_balances: List[FutuCashBalanceSnapshot] = []
     position_counts: Dict[int, int] = {}
     account_metrics: Dict[int, Dict[str, Optional[float]]] = {}
     reporting_currency = "USD"
@@ -735,6 +808,7 @@ def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
                 if not info_rows:
                     raise FutuPortfolioError("Futu 账户资产查询返回了空数据")
                 info = info_rows[0]
+                cash_balances.extend(_extract_cash_balances(account.acc_id, info))
                 realized_pnl = _optional_finite_float(info.get("realized_pl"))
                 unrealized_pnl = _optional_finite_float(info.get("unrealized_pl"))
                 total_pnl = _sum_complete([realized_pnl, unrealized_pnl])
@@ -804,6 +878,17 @@ def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
                 reporting_currency=reporting_currency,
                 reporting_market_value=metrics.get("market_value"),
             )
+            positions = [
+                replace(
+                    item,
+                    exchange_rate_to_reporting_currency=position_fx_rates.get(
+                        item.currency
+                    ),
+                )
+                if item.account_id == account.acc_id
+                else item
+                for item in positions
+            ]
             account_today_pnl = _sum_converted_position_field(
                 account_positions,
                 field="today_pnl",
@@ -853,7 +938,7 @@ def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
         api,
         host,
         port,
-        (position.code for position in positions),
+        positions,
     )
     positions = [
         replace(position, today_change_pct=today_changes.get(position.code))
@@ -900,4 +985,5 @@ def load_futu_broker_snapshot() -> FutuBrokerSnapshot:
         today_pnl_pct=_pnl_percentage(today_pnl, total_market_value),
         accounts=account_snapshots,
         positions=positions,
+        cash_balances=cash_balances,
     )

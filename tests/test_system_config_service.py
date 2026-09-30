@@ -4620,6 +4620,33 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
         self.assertFalse(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
 
+    def test_moomoo_daily_report_settings_reconcile_dedicated_scheduler(self) -> None:
+        scheduler = Mock()
+        service = SystemConfigService(
+            manager=self.manager,
+            moomoo_daily_report_scheduler=scheduler,
+        )
+        result = service.update(
+            config_version=self.manager.get_config_version(),
+            items=[
+                {"key": "MOOMOO_DAILY_REPORT_ENABLED", "value": "true"},
+                {"key": "MOOMOO_DAILY_REPORT_TIME", "value": "08:15"},
+            ],
+            reload_now=True,
+        )
+
+        self.assertTrue(result["success"])
+        scheduler.reconcile_from_config.assert_called_once_with()
+        stored = self.manager.read_config_map()
+        self.assertEqual(stored["MOOMOO_DAILY_REPORT_ENABLED"], "true")
+        self.assertEqual(stored["MOOMOO_DAILY_REPORT_TIME"], "08:15")
+
+    def test_moomoo_daily_report_time_rejects_invalid_value(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "MOOMOO_DAILY_REPORT_TIME", "value": "25:99"}]
+        )
+        self.assertFalse(validation["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

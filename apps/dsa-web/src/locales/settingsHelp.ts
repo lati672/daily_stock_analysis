@@ -710,6 +710,21 @@ const settingsHelpZhCN: SettingsHelpMap = {
       'SCHEDULE_RUN_IMMEDIATELY 仍是启动期行为；保存后不会立即触发一次分析。',
     ],
   },
+  'settings.system.moomoo_daily_report': {
+    title: 'Moomoo 自动持仓日报',
+    summary: '每天在指定服务器本地时间读取只读 Moomoo 持仓，生成收盘日报并仅发送到 Discord。',
+    usage: '先确保 OpenD 已启动登录、LLM 与新闻搜索可用，并配置 Discord Webhook 或 Bot。MOOMOO_DAILY_REPORT_TIME 使用 HH:MM 24 小时格式；美股周末及 NYSE 节假日自动跳过。',
+    valueNotes: [
+      '日报包含程序确定性计算的盈亏归因和集中度，以及 AI 整理的主要新闻与下一交易日关注点。',
+      '开关独立于 SCHEDULE_ENABLED，不会自动开启普通股票批量分析。',
+      '设置页保存开关或时间后，WebUI/API/Desktop 长运行进程会立即重排日报任务。',
+    ],
+    impact: ['启用后会产生模型与新闻搜索调用，并在成功生成后向 Discord 发送消息。'],
+    notes: [
+      '执行时间使用服务器本地时区；同时持有多个市场时，应选择最后一个目标市场收盘后的时间。',
+      '该功能只读取账户、持仓和行情，不执行交易。',
+    ],
+  },
   'settings.system.RUN_IMMEDIATELY': {
     title: '启动后立即运行',
     summary: '控制非定时模式启动时是否立即执行一次分析。',
@@ -1920,6 +1935,21 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'Check the runtime timezone, especially in containers and servers.',
       'SCHEDULE_RUN_IMMEDIATELY remains a startup-time setting; saving it does not trigger an immediate analysis run.',
+    ],
+  },
+  'settings.system.moomoo_daily_report': {
+    title: 'Automatic Moomoo portfolio digest',
+    summary: 'Reads the Moomoo portfolio at a configured server-local time, generates a post-close digest, and sends it only to Discord.',
+    usage: 'Keep OpenD signed in, configure an LLM and news search, and configure either a Discord webhook or bot. MOOMOO_DAILY_REPORT_TIME uses 24-hour HH:MM format; US weekends and NYSE holidays are skipped automatically.',
+    valueNotes: [
+      'The digest combines deterministic P/L attribution and concentration with AI-curated material news and next-session watch points.',
+      'This switch is independent of SCHEDULE_ENABLED and does not enable ordinary batch stock analysis.',
+      'Saving the switch or time immediately reschedules the job in long-running WebUI/API/Desktop processes.',
+    ],
+    impact: ['When enabled, each run consumes model/news-search capacity and sends the completed digest to Discord.'],
+    notes: [
+      'The schedule uses the server local timezone; for multiple markets choose a time after the last target market closes.',
+      'The feature only reads accounts, positions and quotes; it never trades.',
     ],
   },
   'settings.system.RUN_IMMEDIATELY': {

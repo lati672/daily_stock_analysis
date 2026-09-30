@@ -137,6 +137,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [alertType, setAlertType] = useState<AlertType>('price_cross');
   const [severity, setSeverity] = useState<AlertSeverity>('warning');
   const [enabled, setEnabled] = useState(true);
+  const [disableAfterTrigger, setDisableAfterTrigger] = useState(false);
   const [priceDirection, setPriceDirection] = useState<'above' | 'below'>('above');
   const [changeDirection, setChangeDirection] = useState<'up' | 'down'>('up');
   const [thresholdDirection, setThresholdDirection] = useState<'above' | 'below'>('above');
@@ -398,6 +399,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       parameters,
       severity,
       enabled,
+      notificationPolicy: disableAfterTrigger ? { disableAfterTrigger: true } : undefined,
     });
     if (submitted === false) return;
     setName('');
@@ -419,6 +421,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setMinDrop('10');
     resetParameters(alertType);
     setEnabled(true);
+    setDisableAfterTrigger(false);
   };
 
   const renderTargetControl = () => {
@@ -770,12 +773,20 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         ) : null}
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <Checkbox
-            label={text.enableAfterCreate}
-            checked={enabled}
-            onChange={(event) => setEnabled(event.target.checked)}
-            disabled={isSubmitting}
-          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <Checkbox
+              label={text.enableAfterCreate}
+              checked={enabled}
+              onChange={(event) => setEnabled(event.target.checked)}
+              disabled={isSubmitting}
+            />
+            <Checkbox
+              label={text.disableAfterTrigger}
+              checked={disableAfterTrigger}
+              onChange={(event) => setDisableAfterTrigger(event.target.checked)}
+              disabled={isSubmitting}
+            />
+          </div>
           <Button type="submit" isLoading={isSubmitting} loadingText={text.creating}>
             {text.create}
           </Button>

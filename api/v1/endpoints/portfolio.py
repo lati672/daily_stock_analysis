@@ -7,7 +7,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from api.v1.errors import api_error
@@ -15,6 +15,9 @@ from api.v1.schemas.analysis import DuplicateTaskErrorResponse, TaskAccepted
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.portfolio import (
     FutuBrokerSnapshotResponse,
+    MoomooDailyReportRunResponse,
+    MoomooDailyReportSettingsRequest,
+    MoomooDailyReportStatusResponse,
     PortfolioAccountCreateRequest,
     PortfolioAccountItem,
     PortfolioAccountListResponse,
@@ -36,6 +39,9 @@ from api.v1.schemas.portfolio import (
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
 )
+from api.deps import get_moomoo_daily_report_scheduler, get_system_config_service
+from src.services.moomoo_daily_report_scheduler import MoomooDailyReportScheduler
+from src.services.system_config_service import SystemConfigService
 from src.services.task_queue import get_task_queue
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
@@ -78,11 +84,68 @@ def connect_moomoo() -> FutuBrokerSnapshotResponse:
             today_pnl_pct=snapshot.today_pnl_pct,
             accounts=[item.__dict__ for item in snapshot.accounts],
             positions=[item.__dict__ for item in snapshot.positions],
+            cash_balances=[item.__dict__ for item in snapshot.cash_balances],
         )
     except FutuPortfolioError as exc:
         raise api_error(503, "moomoo_unavailable", str(exc))
     except Exception as exc:
         raise _internal_error("Connect to Moomoo failed", exc)
+
+
+@router.get(
+    "/brokers/moomoo/daily-report/status",
+    response_model=MoomooDailyReportStatusResponse,
+    summary="Get Moomoo daily portfolio report scheduler status",
+)
+def get_moomoo_daily_report_status(
+    scheduler: MoomooDailyReportScheduler = Depends(get_moomoo_daily_report_scheduler),
+) -> MoomooDailyReportStatusResponse:
+    return MoomooDailyReportStatusResponse.model_validate(scheduler.status())
+
+
+@router.put(
+    "/brokers/moomoo/daily-report/settings",
+    response_model=MoomooDailyReportStatusResponse,
+    summary="Enable or disable the Moomoo daily portfolio report",
+)
+def update_moomoo_daily_report_settings(
+    request: MoomooDailyReportSettingsRequest,
+    config_service: SystemConfigService = Depends(get_system_config_service),
+    scheduler: MoomooDailyReportScheduler = Depends(get_moomoo_daily_report_scheduler),
+) -> MoomooDailyReportStatusResponse:
+    try:
+        current = config_service.get_config(include_schema=False)
+        config_service.update(
+            config_version=current["config_version"],
+            items=[{
+                "key": "MOOMOO_DAILY_REPORT_ENABLED",
+                "value": "true" if request.enabled else "false",
+            }],
+            reload_now=True,
+        )
+        return MoomooDailyReportStatusResponse.model_validate(scheduler.status())
+    except Exception as exc:
+        raise _internal_error("Update Moomoo daily report settings failed", exc)
+
+
+@router.post(
+    "/brokers/moomoo/daily-report/run",
+    response_model=MoomooDailyReportRunResponse,
+    summary="Generate and send a Moomoo portfolio report now",
+)
+def run_moomoo_daily_report_now(
+    scheduler: MoomooDailyReportScheduler = Depends(get_moomoo_daily_report_scheduler),
+) -> MoomooDailyReportRunResponse:
+    result = scheduler.run_now()
+    if not result.get("accepted", False):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "moomoo_daily_report_busy",
+                "message": "Moomoo daily portfolio report is already running",
+            },
+        )
+    return MoomooDailyReportRunResponse.model_validate(result)
 
 
 def _bad_request(exc: Exception) -> HTTPException:

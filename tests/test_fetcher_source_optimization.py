@@ -343,6 +343,56 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         akshare.get_daily_data.assert_called_once()
         longbridge.get_daily_data.assert_not_called()
 
+    @patch("src.config.get_config")
+    def test_hk_daily_route_prefers_futu_when_available(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace()
+
+        futu = MagicMock()
+        futu.name = "FutuFetcher"
+        futu.priority = 2
+        futu.get_daily_data.return_value = _make_daily_df()
+
+        akshare = MagicMock()
+        akshare.name = "AkshareFetcher"
+        akshare.priority = 1
+        akshare.get_daily_data.return_value = _make_daily_df()
+
+        manager = DataFetcherManager(fetchers=[akshare, futu])
+
+        df, source = manager.get_daily_data(
+            "HK01810", start_date="2026-05-01", end_date="2026-05-08"
+        )
+
+        self.assertFalse(df.empty)
+        self.assertEqual(source, "FutuFetcher")
+        futu.get_daily_data.assert_called_once()
+        akshare.get_daily_data.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_hk_daily_route_falls_back_after_empty_futu_result(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace()
+
+        futu = MagicMock()
+        futu.name = "FutuFetcher"
+        futu.priority = 2
+        futu.get_daily_data.return_value = pd.DataFrame()
+
+        akshare = MagicMock()
+        akshare.name = "AkshareFetcher"
+        akshare.priority = 1
+        akshare.get_daily_data.return_value = _make_daily_df()
+
+        manager = DataFetcherManager(fetchers=[akshare, futu])
+
+        df, source = manager.get_daily_data(
+            "HK01810", start_date="2026-05-01", end_date="2026-05-08"
+        )
+
+        self.assertFalse(df.empty)
+        self.assertEqual(source, "AkshareFetcher")
+        futu.get_daily_data.assert_called_once()
+        akshare.get_daily_data.assert_called_once()
+
 
     @patch("src.config.get_config")
     def test_daily_source_health_skips_repeatedly_failing_source(self, mock_get_config):

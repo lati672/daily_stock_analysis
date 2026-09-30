@@ -1038,6 +1038,8 @@ class Config:
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
+    moomoo_daily_report_enabled: bool = False  # Send a read-only Moomoo portfolio digest to Discord
+    moomoo_daily_report_time: str = "18:10"  # Server-local HH:MM digest schedule
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -2019,6 +2021,13 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            moomoo_daily_report_enabled=parse_env_bool(
+                os.getenv('MOOMOO_DAILY_REPORT_ENABLED'),
+                default=False,
+            ),
+            moomoo_daily_report_time=(
+                os.getenv('MOOMOO_DAILY_REPORT_TIME', '18:10').strip() or '18:10'
+            ),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),

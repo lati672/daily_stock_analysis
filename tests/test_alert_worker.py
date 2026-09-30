@@ -1370,6 +1370,40 @@ class AlertWorkerTestCase(unittest.TestCase):
         )
         self.assertIsNotNone(cooldown)
 
+    def test_one_shot_rule_is_disabled_after_real_channel_success(self) -> None:
+        rule = self._create_rule(
+            target="600519",
+            notification_policy={"disable_after_trigger": True},
+        )
+        notifier = self._notifier(self._dispatch_result(True, channel="discord"))
+        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service, notifier=notifier)
+
+        with patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ):
+            stats = worker.run_once()
+
+        self.assertEqual(stats["notified"], 1)
+        self.assertFalse(self.service.get_rule(rule["id"])["enabled"])
+
+    def test_one_shot_rule_stays_enabled_when_all_channels_fail(self) -> None:
+        rule = self._create_rule(
+            target="600519",
+            notification_policy={"disable_after_trigger": True},
+        )
+        notifier = self._notifier(self._dispatch_result(False, channel="discord"))
+        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service, notifier=notifier)
+
+        with patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=AsyncMock(return_value=SimpleNamespace(price=1810.0)),
+        ):
+            stats = worker.run_once()
+
+        self.assertEqual(stats["notified"], 0)
+        self.assertTrue(self.service.get_rule(rule["id"])["enabled"])
+
     def test_noise_suppression_records_synthetic_attempt_without_upserting_cooldown(self) -> None:
         rule = self._create_rule(target="600519", cooldown_policy={"cooldown_seconds": 60})
 

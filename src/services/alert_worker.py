@@ -58,6 +58,7 @@ class RuntimeAlertRule:
     source: str
     severity: Optional[str] = None
     cooldown_policy: Optional[Dict[str, Any]] = None
+    notification_policy: Optional[Dict[str, Any]] = None
     effective_target: Optional[str] = None
     display_target: Optional[str] = None
 
@@ -143,7 +144,11 @@ class AlertWorker:
         monitor = EventMonitor()
         daily_cache: Dict[Any, Any] = {}
         self._analysis_visibility_cache = {}
+        disabled_one_shot_rule_ids = set()
         for runtime_rule in runtime_rules:
+            rule_id = self.service._runtime_rule_id(runtime_rule.rule)
+            if rule_id in disabled_one_shot_rule_ids:
+                continue
             stats["evaluated"] += 1
             try:
                 result = asyncio.run(self.service._evaluate_rule(runtime_rule.rule, monitor, daily_cache=daily_cache))
@@ -191,6 +196,8 @@ class AlertWorker:
                                 ttl_seconds=cooldown_decision.fallback_ttl_seconds,
                             )
                         stats["notified"] += 1
+                        if self._disable_after_success_safely(runtime_rule):
+                            disabled_one_shot_rule_ids.add(rule_id)
                 elif self._should_notify(runtime_rule.key):
                     dispatch = self._send_notification_safely(runtime_rule, result)
                     stats["notification_attempts"] += self._record_notification_attempts_safely(trigger_id, dispatch)
@@ -207,6 +214,7 @@ class AlertWorker:
         for row in self.service.repo.list_enabled_rules(limit=ALERT_WORKER_RULE_LIMIT):
             try:
                 cooldown_policy = self.service._load_json(row.cooldown_policy, default=None)
+                notification_policy = self.service._load_json(row.notification_policy, default=None)
                 for payload in self.service.build_runtime_payloads(row, config=config, include_overflow_payload=False):
                     if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
                         logger.warning(
@@ -221,6 +229,7 @@ class AlertWorker:
                             source="db",
                             severity=row.severity,
                             cooldown_policy=cooldown_policy,
+                            notification_policy=notification_policy,
                             effective_target=payload.effective_target,
                             display_target=payload.display_target,
                         )
@@ -758,6 +767,29 @@ class AlertWorker:
             if item.success and not channel.startswith("__"):
                 return True
         return False
+
+    def _disable_after_success_safely(self, runtime_rule: RuntimeAlertRule) -> bool:
+        """Disable a persisted one-shot rule after a real channel succeeds."""
+        policy = runtime_rule.notification_policy or {}
+        if policy.get("disable_after_trigger") is not True:
+            return False
+        rule_id = self.service._runtime_rule_id(runtime_rule.rule)
+        if rule_id <= 0:
+            return False
+        try:
+            self.service.enable_rule(rule_id, False)
+            logger.info(
+                "[AlertWorker] Disabled one-shot alert rule %s after successful notification",
+                rule_id,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[AlertWorker] Failed to disable one-shot alert rule %s: %s",
+                rule_id,
+                self.service._sanitize_text(str(exc) or "rule disable failed"),
+            )
+            return False
 
     def _check_db_cooldown(self, runtime_rule: RuntimeAlertRule, trigger_id: Optional[int]) -> DBCooldownDecision:
         """Return the DB cooldown decision for this trigger.

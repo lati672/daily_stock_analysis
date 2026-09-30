@@ -35,7 +35,7 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
     docker_publish = _workflow(".github/workflows/docker-publish.yml")
     manual_publish = _workflow(".github/workflows/ghcr-dockerhub.yml")
 
-    assert requirements.count("futu-api==10.8.6808") == 1
+    assert requirements.count("futu-api==10.9.6908") == 1
     assert (
         'python -c "import src.services.screening.pipeline; import futu"'
         in dockerfile

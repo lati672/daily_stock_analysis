@@ -15,6 +15,7 @@
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
 | 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [API 规格](architecture/api_spec.json) |
+| 维护本 fork 或同步 upstream | [Fork 自定义功能与同步说明](fork-customizations.md) | [贡献指南](CONTRIBUTING.md) |
 
 ## 快速开始
 
@@ -26,6 +27,7 @@
 | [FAQ](FAQ.md) | 常见配置、模型、通知、部署和运行问题 |
 | [数据源稳定性与故障处理图示](data-source-stability.md) | Tushare、TickFlow、AkShare、Efinance、YFinance、Longbridge 等已接入源的使用场景、fallback 链路和推荐配置 |
 | [更新日志](CHANGELOG.md) | 版本变化、能力调整和迁移说明 |
+| [Fork 自定义功能与同步说明](fork-customizations.md) | 本 fork 独有功能、依赖边界、upstream 同步风险与验证清单 |
 
 ## 配置
 

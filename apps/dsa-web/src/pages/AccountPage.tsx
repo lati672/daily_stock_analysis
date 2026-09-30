@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { ChevronDown, ChevronUp, Link2, RefreshCw, ShieldCheck, Sparkles, Unplug } from 'lucide-react';
+import { BellRing, ChevronDown, ChevronUp, Clock3, Link2, RefreshCw, Send, ShieldCheck, Sparkles, Unplug } from 'lucide-react';
 import { moomooApi } from '../api/moomoo';
 import { AppPage, Card, InlineAlert, PageHeader, SectionCard } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
-import type { MoomooSnapshot } from '../types/moomoo';
+import type { MoomooDailyReportStatus, MoomooSnapshot } from '../types/moomoo';
 
 type MarketKey = 'us' | 'hk' | 'other';
 type SortKey = 'code' | 'todayChangePct' | 'quantity' | 'costPrice' | 'currentPrice' | 'marketValue' | 'weight' | 'todayPnl' | 'holdingPnl' | 'unrealizedPnl' | 'realizedPnl';
 type SortDirection = 'desc' | 'asc';
 type SortConfig = { key: SortKey; direction: SortDirection };
 const DEFAULT_MARKET_SORT: SortConfig = { key: 'todayChangePct', direction: 'desc' };
+const HK_DISPLAY_CURRENCY_KEY = 'dsa.account.hkDisplayCurrency';
 
 type MarketSection = {
   key: MarketKey;
@@ -38,6 +39,17 @@ function formatMoney(value: number | null | undefined, currency: string, locale:
     maximumFractionDigits: 2,
     signDisplay: signed && !isNeutral ? 'always' : 'auto',
   }).format(isNeutral ? 0 : value);
+}
+
+function formatCashMoney(value: number | null | undefined, currency: string, locale: string): string {
+  if (value == null) return '—';
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: currency || 'USD',
+    currencyDisplay: 'code',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 function formatPositionMoney(value: number | null | undefined, currency: string, locale: string, signed = false): string {
@@ -81,6 +93,27 @@ function sumPositionField(
   return positions.reduce((total, position) => total + (select(position) ?? 0), 0);
 }
 
+function convertedPositionValue(
+  value: number | null | undefined,
+  position: MoomooSnapshot['positions'][number],
+  convertToUsd: boolean,
+): number | null {
+  if (value == null) return null;
+  if (!convertToUsd || position.currency.toUpperCase() === 'USD') return value;
+  const rate = position.exchangeRateToReportingCurrency;
+  return rate != null && Number.isFinite(rate) && rate > 0 ? value * rate : null;
+}
+
+function sumConvertedPositionField(
+  positions: MoomooSnapshot['positions'],
+  select: (position: MoomooSnapshot['positions'][number]) => number | null | undefined,
+): number | null {
+  const values = positions.map((position) => convertedPositionValue(select(position), position, true));
+  return values.some((value) => value == null)
+    ? null
+    : values.reduce<number>((total, value) => total + (value ?? 0), 0);
+}
+
 function summarizeMarket(positions: MoomooSnapshot['positions'], fallbackCurrency: string) {
   const currencies = [...new Set(positions.map((position) => position.currency?.toUpperCase()).filter(Boolean))];
   const hasSingleCurrency = currencies.length <= 1;
@@ -106,6 +139,15 @@ function errorMessage(error: unknown, fallback: string): string {
     return error.message || fallback;
   }
   return error instanceof Error ? error.message : fallback;
+}
+
+function formatServerLocalDateTime(value: string, locale: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return value;
+  const [, year, month, day, hour, minute] = match;
+  return locale.startsWith('zh')
+    ? `${year}/${month}/${day} ${hour}:${minute}`
+    : `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
 function marketPrefix(code: string): string {
@@ -215,6 +257,12 @@ const AccountPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [accountId, setAccountId] = useState<number | 'all'>('all');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [dailyReport, setDailyReport] = useState<MoomooDailyReportStatus | null>(null);
+  const [dailyReportSaving, setDailyReportSaving] = useState(false);
+  const [dailyReportError, setDailyReportError] = useState<string | null>(null);
+  const [showHongKongInUsd, setShowHongKongInUsd] = useState(() => (
+    typeof window !== 'undefined' && window.localStorage.getItem(HK_DISPLAY_CURRENCY_KEY) === 'USD'
+  ));
   const [marketSorts, setMarketSorts] = useState<Record<MarketKey, SortConfig | null>>({
     us: null,
     hk: null,
@@ -282,6 +330,29 @@ const AccountPage = () => {
     };
   }, [accountId, positions, snapshot]);
 
+  const cashBalances = useMemo(() => {
+    const selected = (snapshot?.cashBalances ?? []).filter((balance) => (
+      accountId === 'all' || balance.accountId === accountId
+    ));
+    const aggregated = new Map<string, { cash: number; available: number | null; power: number | null }>();
+    selected.forEach((balance) => {
+      const currency = balance.currency.toUpperCase();
+      const current = aggregated.get(currency) ?? { cash: 0, available: 0, power: 0 };
+      current.cash += balance.cash;
+      current.available = current.available == null || balance.availableForWithdrawal == null
+        ? null
+        : current.available + balance.availableForWithdrawal;
+      current.power = current.power == null || balance.netCashPower == null
+        ? null
+        : current.power + balance.netCashPower;
+      aggregated.set(currency, current);
+    });
+    const order = ['AUD', 'USD', 'HKD'];
+    return [...aggregated.entries()]
+      .sort(([left], [right]) => order.indexOf(left) - order.indexOf(right))
+      .map(([currency, values]) => ({ currency, ...values }));
+  }, [accountId, snapshot]);
+
   const connect = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -301,9 +372,52 @@ const AccountPage = () => {
     }
   }, [zh]);
 
+  const loadDailyReportStatus = useCallback(async () => {
+    try {
+      setDailyReport(await moomooApi.getDailyReportStatus());
+      setDailyReportError(null);
+    } catch (err) {
+      setDailyReportError(errorMessage(err, zh ? '无法读取持仓日报状态' : 'Unable to load daily report status'));
+    }
+  }, [zh]);
+
+  const toggleDailyReport = useCallback(async () => {
+    if (!dailyReport || dailyReportSaving) return;
+    setDailyReportSaving(true);
+    setDailyReportError(null);
+    try {
+      setDailyReport(await moomooApi.updateDailyReportSettings(!dailyReport.enabled));
+    } catch (err) {
+      setDailyReportError(errorMessage(err, zh ? '无法保存持仓日报开关' : 'Unable to save daily report setting'));
+    } finally {
+      setDailyReportSaving(false);
+    }
+  }, [dailyReport, dailyReportSaving, zh]);
+
+  const runDailyReportNow = useCallback(async () => {
+    if (dailyReportSaving) return;
+    setDailyReportSaving(true);
+    setDailyReportError(null);
+    try {
+      const result = await moomooApi.runDailyReportNow();
+      setDailyReport((current) => current ? { ...current, running: result.running } : current);
+    } catch (err) {
+      setDailyReportError(errorMessage(err, zh ? '无法生成持仓日报' : 'Unable to generate daily report'));
+    } finally {
+      setDailyReportSaving(false);
+    }
+  }, [dailyReportSaving, zh]);
+
   useEffect(() => {
     void connect();
-  }, [connect]);
+    void loadDailyReportStatus();
+  }, [connect, loadDailyReportStatus]);
+
+  useEffect(() => {
+    if (!dailyReport?.running) return undefined;
+    const timer = window.setInterval(() => void loadDailyReportStatus(), 5000);
+    return () => window.clearInterval(timer);
+  }, [dailyReport?.running, loadDailyReportStatus]);
 
   return (
     <AppPage>
@@ -327,6 +441,56 @@ const AccountPage = () => {
         />
 
         {error ? <InlineAlert variant="danger" title={zh ? '连接失败' : 'Connection failed'} message={error} /> : null}
+
+        <SectionCard
+          title={zh ? '自动持仓日报' : 'Automatic portfolio digest'}
+          subtitle={zh ? '收盘后分析盈亏归因、主要新闻、集中度和明日关注点，并仅发送到 Discord。' : 'After close, analyze P/L attribution, material news, concentration and next-session watch points, then send only to Discord.'}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary"><BellRing className="h-4 w-4" /></div>
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {dailyReport?.enabled
+                    ? dailyReport.usMarketOpenToday === false
+                      ? (zh ? '今日暂停 · 美股休市' : 'Paused today · US market closed')
+                      : (zh ? '已开启' : 'Enabled')
+                    : (zh ? '未开启' : 'Disabled')}
+                </p>
+                <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-secondary-text">
+                  <Clock3 className="h-3.5 w-3.5" />
+                  {zh ? `每天 ${dailyReport?.scheduleTime ?? '18:10'}（服务器本地时间）` : `Daily at ${dailyReport?.scheduleTime ?? '18:10'} (server local time)`}
+                  {dailyReport?.nextRunAt ? <span>· {zh ? '下次 ' : 'Next '}{formatServerLocalDateTime(dailyReport.nextRunAt, locale)}</span> : null}
+                </p>
+                {dailyReport?.lastSuccessAt ? <p className="mt-1 text-xs text-secondary-text">{zh ? '最近成功：' : 'Last success: '}{formatServerLocalDateTime(dailyReport.lastSuccessAt, locale)}</p> : null}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-2"
+                disabled={!dailyReport || dailyReportSaving || dailyReport.running}
+                onClick={() => void runDailyReportNow()}
+              >
+                {dailyReport?.running ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {dailyReport?.running ? (zh ? '生成中…' : 'Generating…') : (zh ? '立即生成并发送' : 'Generate and send now')}
+              </button>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={dailyReport?.enabled ?? false}
+                aria-label={zh ? '自动持仓日报' : 'Automatic portfolio digest'}
+                disabled={!dailyReport || dailyReportSaving}
+                onClick={() => void toggleDailyReport()}
+                className={`relative h-7 w-12 rounded-full transition-colors ${dailyReport?.enabled ? 'bg-primary' : 'bg-border'} disabled:opacity-50`}
+              >
+                <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${dailyReport?.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
+          </div>
+          {dailyReportError ? <div className="mt-4"><InlineAlert variant="danger" title={zh ? '持仓日报不可用' : 'Portfolio digest unavailable'} message={dailyReportError} /></div> : null}
+          {dailyReport?.lastError ? <div className="mt-4"><InlineAlert variant="warning" title={zh ? '上次生成失败' : 'Last generation failed'} message={dailyReport.lastError} /></div> : null}
+        </SectionCard>
 
         {!snapshot ? (
           <Card padding="lg" className="flex min-h-64 flex-col items-center justify-center text-center">
@@ -383,6 +547,31 @@ const AccountPage = () => {
                   </a>
                 </div>
               </div>
+              {cashBalances.length > 0 ? (
+                <div className="mt-5 border-t border-border/50 pt-5">
+                  <p className="text-xs font-medium text-secondary-text">{zh ? '分币种现金' : 'Cash by currency'}</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    {cashBalances.map((balance) => (
+                      <div key={balance.currency} className="rounded-lg border border-border/50 bg-surface/40 px-4 py-3">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <span className="text-xs font-semibold text-secondary-text">{balance.currency}</span>
+                          <span className="text-lg font-semibold tabular-nums text-foreground">
+                            {formatCashMoney(balance.cash, balance.currency, locale)}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex justify-between gap-3 text-xs text-muted-text">
+                          <span>{zh ? '可提' : 'Withdrawable'}</span>
+                          <span className="tabular-nums">{formatCashMoney(balance.available, balance.currency, locale)}</span>
+                        </div>
+                        <div className="mt-1 flex justify-between gap-3 text-xs text-muted-text">
+                          <span>{zh ? '现金购买力' : 'Cash buying power'}</span>
+                          <span className="tabular-nums">{formatCashMoney(balance.power, balance.currency, locale)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </Card>
 
             {snapshot.accounts.length > 1 ? (
@@ -397,6 +586,25 @@ const AccountPage = () => {
             {marketSections.map((section) => {
               const sortConfig = marketSorts[section.key] ?? DEFAULT_MARKET_SORT;
               const sortedPositions = sortMarketPositions(section.positions, sortConfig, section.marketValue);
+              const canConvertHongKongToUsd = section.key === 'hk'
+                && section.positions.length > 0
+                && section.positions.every((position) => (
+                  position.currency.toUpperCase() === 'USD'
+                  || (position.exchangeRateToReportingCurrency != null
+                    && Number.isFinite(position.exchangeRateToReportingCurrency)
+                    && position.exchangeRateToReportingCurrency > 0)
+                ));
+              const convertHongKongToUsd = showHongKongInUsd && canConvertHongKongToUsd;
+              const displayCurrency = convertHongKongToUsd ? 'USD' : section.currency;
+              const displayMarketValue = convertHongKongToUsd
+                ? sumConvertedPositionField(section.positions, (position) => position.marketValue)
+                : section.marketValue;
+              const displayHoldingPnl = convertHongKongToUsd
+                ? sumConvertedPositionField(section.positions, (position) => position.holdingPnl)
+                : section.holdingPnl;
+              const displayTodayPnl = convertHongKongToUsd
+                ? sumConvertedPositionField(section.positions, (position) => position.todayPnl)
+                : section.todayPnl;
               const setSortKey = (key: SortKey) => setMarketSorts((current) => {
                 const currentSort = current[section.key];
                 if (!currentSort || currentSort.key !== key) {
@@ -412,24 +620,49 @@ const AccountPage = () => {
                 key={section.key}
                 title={section.title}
                 subtitle={section.subtitle}
+                actions={section.key === 'hk' ? (
+                  <div className="flex items-center gap-2 text-xs text-secondary-text">
+                    <span>{zh ? '显示币种' : 'Display currency'}</span>
+                    <span className={!convertHongKongToUsd ? 'font-semibold text-foreground' : ''}>HKD</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={convertHongKongToUsd}
+                      aria-label={zh ? '港股金额换算为美元' : 'Convert Hong Kong amounts to USD'}
+                      title={!canConvertHongKongToUsd
+                        ? (zh ? '当前快照没有可用的港币兑美元汇率' : 'No HKD to USD rate is available for this snapshot')
+                        : undefined}
+                      disabled={!canConvertHongKongToUsd}
+                      onClick={() => setShowHongKongInUsd((current) => {
+                        const next = !current;
+                        window.localStorage.setItem(HK_DISPLAY_CURRENCY_KEY, next ? 'USD' : 'HKD');
+                        return next;
+                      })}
+                      className={`relative h-6 w-11 rounded-full transition-colors ${convertHongKongToUsd ? 'bg-primary' : 'bg-border'} disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${convertHongKongToUsd ? 'translate-x-5' : ''}`} />
+                    </button>
+                    <span className={convertHongKongToUsd ? 'font-semibold text-foreground' : ''}>USD</span>
+                  </div>
+                ) : undefined}
               >
                 <div className="mb-4 grid gap-4 border-y border-border/50 py-3 sm:grid-cols-3 sm:gap-6">
                   <div>
                     <p className="text-xs font-medium text-secondary-text">{zh ? '总市值' : 'Total market value'}</p>
                     <p className="mt-1 text-lg font-semibold text-foreground tabular-nums">
-                      {formatMoney(section.marketValue, section.currency, locale)}
+                      {formatMoney(displayMarketValue, displayCurrency, locale)}
                     </p>
                   </div>
                   <div>
                     <p className="text-xs font-medium text-secondary-text">{zh ? '持仓盈亏' : 'Position P/L'}</p>
-                    <p className={`mt-1 text-lg font-semibold tabular-nums ${pnlTone(section.holdingPnl)}`}>
-                      {formatMoney(section.holdingPnl, section.currency, locale, true)}
+                    <p className={`mt-1 text-lg font-semibold tabular-nums ${pnlTone(displayHoldingPnl)}`}>
+                      {formatMoney(displayHoldingPnl, displayCurrency, locale, true)}
                     </p>
                   </div>
                   <div>
                     <p className="text-xs font-medium text-secondary-text">{zh ? '今日盈亏' : "Today's P/L"}</p>
-                    <p className={`mt-1 text-lg font-semibold tabular-nums ${pnlTone(section.todayPnl)}`}>
-                      {formatMoney(section.todayPnl, section.currency, locale, true)}
+                    <p className={`mt-1 text-lg font-semibold tabular-nums ${pnlTone(displayTodayPnl)}`}>
+                      {formatMoney(displayTodayPnl, displayCurrency, locale, true)}
                     </p>
                   </div>
                 </div>
@@ -449,7 +682,12 @@ const AccountPage = () => {
                       <SortableHeader label={zh ? '已实现盈亏' : 'Realized P/L'} marketTitle={section.title} sortKey="realizedPnl" config={sortConfig} onSort={setSortKey} />
                     </tr></thead>
                     <tbody>
-                      {sortedPositions.map((position) => <tr key={`${position.accountId}-${position.code}-${position.positionSide}`} className="border-b border-border/40 last:border-0">
+                      {sortedPositions.map((position) => {
+                        const displayPositionCurrency = convertHongKongToUsd ? 'USD' : position.currency;
+                        const displayPositionValue = (value: number | null | undefined) => (
+                          convertedPositionValue(value, position, convertHongKongToUsd)
+                        );
+                        return <tr key={`${position.accountId}-${position.code}-${position.positionSide}`} className="border-b border-border/40 last:border-0">
                         <td className="max-w-[240px] px-3 py-3">
                           <p className="text-base font-semibold text-foreground">{displayCode(position.code)}</p>
                           <p className="mt-0.5 truncate text-xs text-secondary-text" title={position.name}>{position.name || '—'}</p>
@@ -460,23 +698,24 @@ const AccountPage = () => {
                         </td>
                         <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.todayChangePct)}`}>{formatSignedPercent(position.todayChangePct, locale)}</td>
                         <td className="px-3 py-3 text-right text-foreground">{optionalNumber(position.quantity, locale, 4)}</td>
-                        <td className="px-3 py-3 text-right text-foreground tabular-nums">{formatPositionMoney(position.costPrice, position.currency, locale)}</td>
-                        <td className="px-3 py-3 text-right text-foreground tabular-nums">{formatPositionMoney(position.currentPrice, position.currency, locale)}</td>
-                        <td className="px-3 py-3 text-right font-medium text-foreground tabular-nums">{formatPositionMoney(position.marketValue, position.currency, locale)}</td>
+                        <td className="px-3 py-3 text-right text-foreground tabular-nums">{formatPositionMoney(displayPositionValue(position.costPrice), displayPositionCurrency, locale)}</td>
+                        <td className="px-3 py-3 text-right text-foreground tabular-nums">{formatPositionMoney(displayPositionValue(position.currentPrice), displayPositionCurrency, locale)}</td>
+                        <td className="px-3 py-3 text-right font-medium text-foreground tabular-nums">{formatPositionMoney(displayPositionValue(position.marketValue), displayPositionCurrency, locale)}</td>
                         <td className="px-3 py-3 text-right text-secondary-text tabular-nums">{section.marketValue != null && section.marketValue > 0 && position.marketValue != null ? `${(position.marketValue / section.marketValue * 100).toFixed(1)}%` : '—'}</td>
-                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.todayPnl)}`}>{formatPositionMoney(position.todayPnl, position.currency, locale, true)}</td>
-                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.holdingPnl)}`}>{formatPositionMoney(position.holdingPnl, position.currency, locale, true)}</td>
+                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.todayPnl)}`}>{formatPositionMoney(displayPositionValue(position.todayPnl), displayPositionCurrency, locale, true)}</td>
+                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.holdingPnl)}`}>{formatPositionMoney(displayPositionValue(position.holdingPnl), displayPositionCurrency, locale, true)}</td>
                         <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.unrealizedPnl)}`}>
                           <div className="flex items-start justify-end gap-1.5">
                             <span aria-hidden="true">{position.unrealizedPnl == null || Math.abs(position.unrealizedPnl) < 0.005 ? '—' : position.unrealizedPnl > 0 ? '↑' : '↓'}</span>
                             <span>
-                              <span className="block">{formatPositionMoney(position.unrealizedPnl, position.currency, locale, true)}</span>
+                              <span className="block">{formatPositionMoney(displayPositionValue(position.unrealizedPnl), displayPositionCurrency, locale, true)}</span>
                               <span className="mt-0.5 block text-xs">{formatSignedPercent(position.unrealizedPnlPct, locale)}</span>
                             </span>
                           </div>
                         </td>
-                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.realizedPnl)}`}>{formatPositionMoney(position.realizedPnl, position.currency, locale, true)}</td>
-                      </tr>)}
+                        <td className={`px-3 py-3 text-right font-medium tabular-nums ${pnlTone(position.realizedPnl)}`}>{formatPositionMoney(displayPositionValue(position.realizedPnl), displayPositionCurrency, locale, true)}</td>
+                      </tr>;
+                      })}
                     </tbody>
                   </table>
                   {section.positions.length === 0 ? <p className="py-10 text-center text-sm text-secondary-text">{zh ? `当前没有${section.key === 'us' ? '美股' : '港股'}持仓。` : `No ${section.key === 'us' ? 'US' : 'Hong Kong'} positions.`}</p> : null}

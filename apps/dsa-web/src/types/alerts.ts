@@ -77,6 +77,9 @@ export interface AlertRuleCreateRequest {
   parameters: AlertRuleParameters;
   severity: AlertSeverity;
   enabled?: boolean;
+  notificationPolicy?: {
+    disableAfterTrigger?: boolean;
+  };
 }
 
 export interface AlertDeleteResponse {

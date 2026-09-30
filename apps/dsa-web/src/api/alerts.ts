@@ -27,6 +27,11 @@ function toSnakeRulePayload(payload: AlertRuleCreateRequest): Record<string, unk
   if (payload.alertType !== undefined) request.alert_type = payload.alertType;
   if (payload.severity !== undefined) request.severity = payload.severity;
   if (payload.enabled !== undefined) request.enabled = payload.enabled;
+  if (payload.notificationPolicy !== undefined) {
+    request.notification_policy = omitUndefined({
+      disable_after_trigger: payload.notificationPolicy.disableAfterTrigger,
+    });
+  }
   if (payload.parameters !== undefined) {
     request.parameters = omitUndefined({
       direction: payload.parameters.direction,

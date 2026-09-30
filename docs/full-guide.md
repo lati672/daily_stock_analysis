@@ -404,10 +404,12 @@ daily_stock_analysis/
 
 | 变量名 | 说明 | 默认值 | 必填 |
 |--------|------|--------|:----:|
-| `FUTU_OPEND_HOST` | OpenD 地址；锁定的 `futu-api==10.8.6808` 仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
+| `FUTU_OPEND_HOST` | OpenD 地址；当前集成仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
 | `FUTU_OPEND_PORT` | OpenD 端口，合法范围 `1-65535`。 | `11111` | 可选 |
 | `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` 枚举名；`NONE` 表示使用 SDK 官方自动识别一次，也可显式指定券商。 | `NONE` | 可选 |
 | `FUTU_ACC_ID` | 指定一个符合条件的 REAL 账户 ID；留空时合并所有状态为 `ACTIVE` 的 `NORMAL`（普通）和 `MASTER`（主）证券账户。账户 ID 应按敏感配置处理，不要提交到仓库。 | 空 | 可选 |
+| `MOOMOO_DAILY_REPORT_ENABLED` | 是否在服务器进程中启用每日 Moomoo 持仓日报。 | `false` | 可选 |
+| `MOOMOO_DAILY_REPORT_TIME` | 每日持仓日报执行时间，24 小时制 `HH:MM`，按服务器本地时区解释。 | `18:10` | 可选 |
 
 `MASTER` 仅表示 Futu 的主账户角色，不表示账户具有只读属性。本集成的只读边界来自它只调用账户、持仓和证券信息查询接口，不调用交易解锁、下单、改单或撤单接口。
 
@@ -719,11 +721,11 @@ python main.py --workers 5            # 指定并发数
 
 ### Futu 真实持仓作为分析列表
 
-标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
+标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.9.6908`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
 
 ```bash
 # 仅裁剪过的自定义环境需要执行下一行
-pip install "futu-api==10.8.6808"
+pip install "futu-api==10.9.6908"
 # 所有标准安装均可直接运行
 python main.py --portfolio futu
 ```
@@ -732,7 +734,7 @@ python main.py --portfolio futu
 
 只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。Futu 持仓代码转换仅支持沪深 A 股、港股和美股；沪深 B 股、日股及其他 Futu 市场持仓会在日志中列出代码并跳过，这不改变手工股票列表的既有市场支持边界。如果可用账户 ID 无效，或 `LONG` 持仓数量无效、非零 `LONG` 持仓代码无效、静态类型缺失 / 未知，或已确认的正股代码无法转换为当前分析格式，整次持仓导入会明确失败，不会返回静默截断的部分结果。
 
-OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。锁定的 `futu-api==10.8.6808` 网络层使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
+OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。当前集成使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
 
 若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。若没有符合条件的 Futu 持仓，本轮会跳过个股分析且不会回退到 `STOCK_LIST`；已启用的大盘复盘仍按原配置执行，大盘复盘也未请求时不会刷新股票索引或构造分析管线，已启用的自动回测仍作为独立步骤执行。单次 CLI 仅在 SDK、OpenD、账户发现、持仓读取或证券分类等持仓解析边界失败时返回非零退出码；持仓解析成功后的交易日历、分析管线和报告异常仍沿用原分析流程的记录与容错语义。已启动服务与定时调度会记录持仓导入错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。现有分析日志会记录本轮股票代码，但不会记录账户 ID、持仓数量、成本或资金；分享运行日志前请按需脱敏。
 
@@ -1338,7 +1340,7 @@ PUSHOVER_API_TOKEN=your_api_token
 STOCK_LIST=600519,hk00700,hk01810
 ```
 
-港股日线会跳过 efinance、pytdx、baostock 等不支持港股日线的数据源，避免把港股代码错配到非港股市场；默认改由 AkShare/Tushare/YFinance/Longbridge 等港股路径继续兜底。
+港股日线会跳过 efinance、pytdx、baostock 等不支持港股日线的数据源，避免把港股代码错配到非港股市场。配置 `FUTU_OPEND_HOST` 后，港股日 K 优先从 Futu OpenD 读取；Futu 返回空数据或失败时，继续按 AkShare/Tushare/YFinance/Longbridge 等原有港股路径兜底。
 
 ### ETF 与指数分析
 
@@ -1559,9 +1561,11 @@ WebUI 与 FastAPI API 服务共用同一服务进程，启动后可在浏览器�
 
 侧边栏“账户”页（`/account`）打开时会通过后端只读连接已登录的 Moomoo OpenD，并以表格展示真实账户与实时持仓；点击“刷新持仓”会以 `refresh_cache=True` 重新查询。概览的持仓盈亏汇总每项持仓的 `pl_val`，今日盈亏汇总 `today_pl_val`；美股和港股分区也各自汇总并展示总市值、持仓盈亏与今日盈亏。持仓数据和市场分区使用 OpenD 返回的原生币种（美股 USD、港股 HKD）；为减少重复，港股明细行省略 `HKD` 代码，仅在港股分区的总市值、持仓盈亏和今日盈亏汇总中显示。仓位在同市场同币种的证券市值内计算，不直接混加 USD 与 HKD，也不包含现金。若 OpenD 没有返回账户级 USD 盈亏，混合币种账户的顶部盈亏显示为不可用，而不是将本地币种金额直接相加。主表的成本价使用 `average_cost`，并将 `pl_val`、`unrealized_pl`、`realized_pl` 分别展示为持仓、未实现和已实现盈亏，不在字段缺失时彼此代替。账户顶部概览继续使用 OpenD 的 USD 报告币种。后端优先兼容 `moomoo` SDK，并保留已锁定 `futu` SDK 的回退支持。页面不会收集 Moomoo 登录密码或交易解锁密码；连接继续使用服务端 `FUTU_OPEND_HOST`、`FUTU_OPEND_PORT`、`FUTU_SECURITY_FIRM` 和可选的 `FUTU_ACC_ID` 配置。该页只调用账户和持仓查询接口，不提供下单、改单、撤单或交易解锁能力。
 
-账户页会为持仓代码批量查询 OpenD 行情快照，并按 `(最新价 - 昨收价) / 昨收价 × 100%` 计算今日涨幅；行情快照不可用时不影响持仓加载，对应涨幅显示为不可用。美股和港股持仓分别默认按今日涨幅从高到低排序；表格的证券、今日涨幅、数量、平均成本、现价、市值、仓位及各盈亏字段均可点击表头排序，第一次点击按所选字段降序、第二次切换为升序、第三次取消所选字段并恢复今日涨幅降序的默认排序。当前生效方向以强调色箭头标识，缺失值始终置底。
+账户页会为持仓代码批量查询 OpenD 行情快照，并选择与持仓现价最匹配的交易时段计算今日涨幅：盘前使用盘前涨幅，盘后使用盘后涨幅，常规时段使用最新成交价相对昨收的涨幅；行情快照不可用时不影响持仓加载，对应涨幅显示为不可用。美股和港股持仓分别默认按今日涨幅从高到低排序；表格的证券、今日涨幅、数量、平均成本、现价、市值、仓位及各盈亏字段均可点击表头排序，第一次点击按所选字段降序、第二次切换为升序、第三次取消所选字段并恢复今日涨幅降序的默认排序。当前生效方向以强调色箭头标识，缺失值始终置底。
 
 账户页每项持仓下方的“AI 分析”会新建独立问股对话并预填针对该证券的持仓风险问题；顶部今日盈亏的“AI 归因”也会新建独立对话并预填组合归因问题，不会把账户分析追加到最近的旧对话。问股页也可手动打开“结合我的 Moomoo 持仓”，该开关默认关闭且仅影响本次发送。开启后，服务端才会从 OpenD 读取最新只读持仓，按证券合并数据，并在调用 LLM 前由程序计算市场内仓位、今日盈亏贡献和贡献排序；LLM 只负责解释这些确定性结果。传入模型的精简上下文不包含账户 ID、OpenD 主机/端口、券商角色或任何下单、改单、撤单与解锁交易能力。OpenD 临时不可用时，问股仍会继续，并明确收到持仓上下文不可用的状态。
+
+账户页还提供默认关闭的“自动持仓日报”开关及“立即生成并发送”入口。启用后，WebUI/API/Desktop 长运行进程会在 `MOOMOO_DAILY_REPORT_TIME` 指定的服务器本地时间读取最新只读持仓，生成包含盈亏归因、主要新闻、集中度和下一交易日关注点的 Markdown 日报，并仅发送到 Discord。调度器按纽约本地日期检查美股交易日：NYSE 周末或节假日会自动跳过，不会关闭持久开关，并把下次运行时间推进到下一个美股交易日；手动“立即生成并发送”仍可作为人工覆盖。该调度独立于 `SCHEDULE_ENABLED`，不执行交易；使用前需保持 OpenD 已登录，并配置可用的 LLM、新闻搜索和 Discord Webhook 或 Bot。若同时持有多个市场，应把执行时间设置在最后一个目标市场收盘之后。
 
 Agent 通过 LiteLLM 的 Chat Completions 兼容接口使用 `gpt-5.6-terra` 时，工具调用轮次会自动设置 `reasoning_effort=none`，以符合该接口对函数工具的参数约束；不包含工具的纯文本调用不会被改写。该兼容处理只影响 Agent 工具轮次，无需更换模型或修改密钥配置。
 
@@ -1644,6 +1648,9 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/decision-signals/latest/{stock_code}` | GET | 查询指定股票最新 active 决策信号 |
 | `/api/v1/usage/summary?period=today|month|all` | GET | 按调用类型与模型维度汇总 LLM 调用次数和 Token 用量 |
 | `/api/v1/usage/dashboard?period=today|month|all&limit=50` | GET | 返回 Token 用量看板数据：总量、Prompt/Completion 拆分、模型用量、调用类型分布和最近调用明细；Web 侧入口为左侧导航“用量” |
+| `/api/v1/portfolio/brokers/moomoo/daily-report/status` | GET | 查询自动持仓日报的开关、计划时间、运行状态及最近结果 |
+| `/api/v1/portfolio/brokers/moomoo/daily-report/settings` | PUT | 持久化开启或关闭自动持仓日报，请求体为 `{"enabled": true|false}` |
+| `/api/v1/portfolio/brokers/moomoo/daily-report/run` | POST | 异步立即生成一次持仓日报并仅发送到 Discord；已有任务运行时返回 409 |
 | `/api/v1/backtest/run` | POST | 触发回测 |
 | `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
 | `/api/v1/backtest/performance` | GET | 获取整体回测表现 |

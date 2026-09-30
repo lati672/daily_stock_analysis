@@ -207,6 +207,9 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                     <Badge variant={rule.enabled ? 'success' : 'default'}>
                       {rule.enabled ? text.enabled : text.disabled}
                     </Badge>
+                    {rule.notificationPolicy?.disableAfterTrigger === true ? (
+                      <div className="mt-1 text-xs text-muted-text">{text.oneShot}</div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3 text-xs text-secondary-text">
                     <div>{isCoolingDown(rule) ? text.coolingDown : text.notCoolingDown}</div>

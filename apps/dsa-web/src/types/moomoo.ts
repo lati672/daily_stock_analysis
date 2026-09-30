@@ -31,6 +31,15 @@ export interface MoomooPosition {
   todayPnl?: number | null;
   todayChangePct?: number | null;
   currency: string;
+  exchangeRateToReportingCurrency?: number | null;
+}
+
+export interface MoomooCashBalance {
+  accountId: number;
+  currency: string;
+  cash: number;
+  availableForWithdrawal?: number | null;
+  netCashPower?: number | null;
 }
 
 export interface MoomooSnapshot {
@@ -49,4 +58,22 @@ export interface MoomooSnapshot {
   todayPnlPct?: number | null;
   accounts: MoomooAccount[];
   positions: MoomooPosition[];
+  cashBalances: MoomooCashBalance[];
+}
+
+export interface MoomooDailyReportStatus {
+  enabled: boolean;
+  usMarketOpenToday: boolean;
+  scheduleTime: string;
+  nextRunAt?: string | null;
+  running: boolean;
+  lastRunAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+}
+
+export interface MoomooDailyReportRunResult {
+  accepted: boolean;
+  running: boolean;
+  reason?: string | null;
 }

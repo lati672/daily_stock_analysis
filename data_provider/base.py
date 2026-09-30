@@ -1695,6 +1695,7 @@ class DataFetcherManager:
         # 快速路径：美股使用专用数据源路由；港股先过滤不支持港股日线的数据源
         #   - 配置长桥凭据后: Longbridge 为首选, YFinance/AkShare 兜底
         #   - 未配置长桥:     YFinance 为首选（美股）, 通用 fetcher 循环（港股）
+        #   - 配置 Futu OpenD: 港股日线优先 Futu，失败后按原有顺序兜底
         #   - 美股指数:       始终 YFinance 为首选（Longbridge 不提供指数K线）
         is_us_index = is_us_index_code(stock_code)
         is_us = is_us_index or is_us_stock_code(stock_code)
@@ -1706,6 +1707,11 @@ class DataFetcherManager:
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+        if is_hk:
+            # FutuFetcher is only registered when FUTU_OPEND_HOST is explicitly
+            # configured. Prefer that local OpenD path for HK history while
+            # preserving the existing provider order as the fallback chain.
+            fetchers.sort(key=lambda fetcher: fetcher.name != "FutuFetcher")
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:

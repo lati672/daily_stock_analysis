@@ -75,6 +75,15 @@ class FutuBrokerPositionItem(BaseModel):
     today_pnl: Optional[float] = None
     today_change_pct: Optional[float] = None
     currency: str = ""
+    exchange_rate_to_reporting_currency: Optional[float] = None
+
+
+class FutuBrokerCashBalanceItem(BaseModel):
+    account_id: int
+    currency: str
+    cash: float
+    available_for_withdrawal: Optional[float] = None
+    net_cash_power: Optional[float] = None
 
 
 class FutuBrokerSnapshotResponse(BaseModel):
@@ -93,6 +102,28 @@ class FutuBrokerSnapshotResponse(BaseModel):
     today_pnl_pct: Optional[float] = None
     accounts: List[FutuBrokerAccountItem] = Field(default_factory=list)
     positions: List[FutuBrokerPositionItem] = Field(default_factory=list)
+    cash_balances: List[FutuBrokerCashBalanceItem] = Field(default_factory=list)
+
+
+class MoomooDailyReportSettingsRequest(BaseModel):
+    enabled: bool
+
+
+class MoomooDailyReportStatusResponse(BaseModel):
+    enabled: bool = False
+    us_market_open_today: bool = True
+    schedule_time: str = "18:10"
+    next_run_at: Optional[str] = None
+    running: bool = False
+    last_run_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class MoomooDailyReportRunResponse(BaseModel):
+    accepted: bool
+    running: bool
+    reason: Optional[str] = None
 
 
 class PortfolioTradeCreateRequest(BaseModel):

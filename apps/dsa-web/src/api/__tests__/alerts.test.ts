@@ -97,6 +97,7 @@ describe('alertsApi', () => {
       parameters: { direction: 'down', changePct: 3 },
       severity: 'critical',
       enabled: true,
+      notificationPolicy: { disableAfterTrigger: true },
     });
 
     expect(post).toHaveBeenCalledWith('/api/v1/alerts/rules', {
@@ -107,6 +108,7 @@ describe('alertsApi', () => {
       parameters: { direction: 'down', change_pct: 3 },
       severity: 'critical',
       enabled: true,
+      notification_policy: { disable_after_trigger: true },
     });
     expect(created.parameters.changePct).toBe(3);
   });

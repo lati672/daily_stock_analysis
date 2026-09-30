@@ -209,6 +209,7 @@ P4 让真实告警触发具备可排障的通知结果，并让通过 Alert API 
   - legacy `AGENT_EVENT_ALERT_RULES_JSON` 规则继续使用 worker 进程内 fingerprint，不写 `alert_cooldowns`。
   - `notification_noise.py` 仍作为通知基础设施层的全局安全网；它不是告警业务 cooldown，且被其抑制时不会写入或延长 `alert_cooldowns`。
 - DB 规则的 `cooldown_policy.cooldown_seconds` 归一为非负整数；缺失时使用默认 24 小时业务冷却，`0` 表示关闭 DB 业务冷却。
+- DB 规则可设置 `notification_policy.disable_after_trigger=true` 作为一次性告警。只有至少一个真实通知渠道发送成功后才自动将规则设为停用；无可用渠道、全部发送失败或仅产生 synthetic attempt 时保持启用，以便下一轮重试。
 - `GET /api/v1/alerts/rules` 会返回只读 `last_triggered_at` / `cooldown_until` / `cooldown_active` 摘要；`cooldown_active` 由后端按同一冷却时间语义计算，Web 不在浏览器本地解析 naive ISO 字符串来推断状态。
 - Web 告警中心只读展示冷却状态和通知结果，不提供 cooldown policy 编辑表单。
 
